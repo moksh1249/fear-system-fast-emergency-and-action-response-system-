@@ -127,6 +127,14 @@ const State = {
   redlightGroups: new Map(), // groupId -> { id, memberIds:[nodeId...], turnSec }
   nextIdCounter: 1,
 
+  // External signal control (see redlight.js) - session-only, never saved to
+  // map_data.json, never undoable. signalFreeze holds each frozen
+  // intersection's (or turn-taking group's) own paused fixed-time clock;
+  // externalOverrides mirrors the server-side registry in serve.py so any
+  // Python/C++ script hitting POST /api/signal/override shows up here too.
+  signalFreeze: new Map(),      // freezeKey ("n:"+nodeId or "g:"+groupId) -> {offset, frozenAt, refCount}
+  externalOverrides: new Map(), // nodeId -> {wayId, controller, since}
+
   view: { scale: 1, cx: 0, cy: 0, rotation: 0 }, // scale = px per metre; (cx,cy) = world point at canvas centre; rotation in radians
   tool: "pan",
   selected: [], // [{type:'node'|'way', id}, ...] - index 0 is "primary" (rotate handle, single-item inspector)
@@ -435,6 +443,12 @@ function loadData(data) {
     });
   }
   State.nextIdCounter = data.meta && data.meta.nextIdCounter ? data.meta.nextIdCounter : 1;
+  // A freshly-loaded map has all-new node ids, so any frozen clock/override
+  // keyed on the previous map's ids is meaningless - drop them rather than
+  // leaving orphaned entries around (a live external override just gets
+  // re-applied on the next poll, against whatever node id it actually names).
+  State.signalFreeze = new Map();
+  State.externalOverrides = new Map();
   State.redlightGroups = new Map();
   for (const g of (data.redlightGroups || [])) {
     State.redlightGroups.set(g.id, {
@@ -2295,6 +2309,35 @@ $("#rotationResetBtn").addEventListener("click", () => setRotation(0));
 // which every script has finished loading).
 $("#simPlayBtn").addEventListener("click", () => toggleSim());
 $("#simResetBtn").addEventListener("click", () => resetSim());
+
+$("#simSpeedSlider").addEventListener("input", (e) => {
+  setSimSpeed(parseFloat(e.target.value));
+  updateSimPresetButtons();
+});
+$("#simSpeedSlider").addEventListener("change", () => { Config.simSpeedMultiplier = Sim.speedMultiplier; saveConfig(); });
+
+for (const btn of document.querySelectorAll(".sim-preset-btn")) {
+  btn.addEventListener("click", () => {
+    const v = setSimSpeed(parseFloat(btn.dataset.speed));
+    $("#simSpeedSlider").value = String(v);
+    updateSimPresetButtons();
+    Config.simSpeedMultiplier = v;
+    saveConfig();
+  });
+}
+function updateSimPresetButtons() {
+  for (const btn of document.querySelectorAll(".sim-preset-btn")) {
+    btn.classList.toggle("active", parseFloat(btn.dataset.speed) === Sim.speedMultiplier);
+  }
+}
+
+$("#simDurationHoursInput").addEventListener("change", (e) => {
+  const v = parseFloat(e.target.value);
+  const hours = setSimDurationHours(Number.isFinite(v) ? v : 0);
+  e.target.value = String(hours);
+  Config.simDurationHours = hours;
+  saveConfig();
+});
 
 $("#arrowsToggleBtn").addEventListener("click", () => {
   Config.showDirectionArrows = !Config.showDirectionArrows;

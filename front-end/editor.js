@@ -2646,7 +2646,7 @@ async function boot() {
   updateTimersButton();
   updateBuildingsButton();
   updateAmenitiesButton();
-  updateSimButton();
+  initSimControlsUI();
   updateRotationReadout();
   initResizablePanel($("#inspector"), "inspectorWidth");
   initResizablePanel($("#settingsPanel"), "settingsPanelWidth");

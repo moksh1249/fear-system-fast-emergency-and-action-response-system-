@@ -85,6 +85,36 @@
         <div class="sidebar-section-title">Simulation</div>
         <button id="simPlayBtn" title="Play/pause the fixed-time traffic-light simulation">▶ Play</button>
         <button id="simResetBtn" title="Reset the simulation clock to 0">↺ Sim Reset</button>
+
+        <div class="sim-clock-row">
+          <span id="simDurationLabel" class="sim-clock-value">00:00:00 elapsed</span>
+        </div>
+        <div class="sim-progress-track"><div id="simDurationBar" class="sim-progress-fill"></div></div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="simSpeedSlider">Fast-forward speed</label>
+          <div class="range-row">
+            <input type="range" id="simSpeedSlider" min="1" max="24" step="1" value="1">
+            <span id="simSpeedReadout" class="range-readout">1x</span>
+          </div>
+          <div class="sim-speed-presets">
+            <button type="button" class="sim-preset-btn" data-speed="1">1x</button>
+            <button type="button" class="sim-preset-btn" data-speed="5">5x</button>
+            <button type="button" class="sim-preset-btn" data-speed="10">10x</button>
+            <button type="button" class="sim-preset-btn" data-speed="24">24x</button>
+          </div>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="simDurationHoursInput">Duration (hours, 0 = unlimited)</label>
+          <input type="number" id="simDurationHoursInput" class="sim-number-input" min="0" step="0.5" value="0">
+        </div>
+      </div>
+
+      <div class="sidebar-section" id="extControlSection">
+        <div class="sidebar-section-title">External Control</div>
+        <div id="extControlCount" class="ext-ctrl-count">No active external control</div>
+        <div id="extControlList" class="ext-ctrl-list"></div>
       </div>
 
       <div class="sidebar-section">

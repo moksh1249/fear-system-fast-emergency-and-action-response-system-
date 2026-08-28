@@ -61,9 +61,7 @@ function renderInspector() {
       el("div", { class: "field" }, el("label", {}, "Connected roads"),
         el("div", { class: "readonly" }, String(connectedWaysSorted(sel.id).length))),
     );
-    if (node.signal) {
-      body.append(el("div", { class: "field" }, el("label", {}, "Traffic light"), el("div", { class: "readonly" }, "Yes")));
-    }
+    if (node.signal) body.append(renderExternalControlPanel(sel.id));
     body.append(tagsReadout(node.tags));
   } else if (sel.type === "way") {
     const way = State.ways.get(sel.id);
@@ -129,6 +127,59 @@ function renderInspector() {
   } else {
     panel.hidden = true;
   }
+}
+
+// The manual "Test override" panel for a traffic-light intersection - takes
+// the exact same server round trip a real Python/C++ script would (see
+// redlight.js's requestSignalOverride/releaseManualOverride, and
+// backend/signal_control.py's module docstring for the full HTTP contract),
+// so this is a way to try the external-control feature out without writing
+// a script first.
+function renderExternalControlPanel(nodeId) {
+  const wrap = el("div", {});
+  wrap.append(el("div", { class: "section-title" }, "Traffic light · external control"));
+
+  const override = State.externalOverrides.get(nodeId);
+  if (override) {
+    const forcing = override.wayId
+      ? `forcing ${override.wayId} green, every other approach red`
+      : "forcing every approach red (full stop)";
+    wrap.append(el("div", { class: "ext-ctrl-banner" },
+      `Under external control by "${override.controller}" - ${forcing}. This intersection's phase clock is frozen and will resume right where it left off once released.`));
+    const releaseBtn = el("button", {
+      onclick: async () => {
+        releaseBtn.disabled = true;
+        releaseBtn.textContent = "Releasing...";
+        await releaseManualOverride(nodeId);
+        renderInspector();
+      },
+    }, "◼ Release control (test)");
+    wrap.append(releaseBtn);
+    return wrap;
+  }
+
+  const approaches = approachableWaysSorted(nodeId);
+  if (!approaches.length) {
+    wrap.append(el("div", { class: "readonly" }, "No approaches to force green."));
+    return wrap;
+  }
+  const waySelect = el("select", {},
+    ...approaches.map((a, i) => el("option", { value: a.wayId }, `${a.wayId} (approach ${i + 1})`)),
+    el("option", { value: "" }, "— none: force all red —"));
+  const takeBtn = el("button", {
+    onclick: async () => {
+      takeBtn.disabled = true;
+      takeBtn.textContent = "Taking control...";
+      await requestSignalOverride(nodeId, waySelect.value || null, "manual-test-ui");
+      renderInspector();
+    },
+  }, "▶ Take control (test override)");
+  wrap.append(
+    el("div", { class: "field" }, el("label", {}, "Force this approach green"), waySelect),
+    takeBtn,
+    el("div", { class: "readonly" }, "This is the same request any external Python/C++ script uses - see backend/signal_control.py."),
+  );
+  return wrap;
 }
 
 /* ---------------- Pan (drag) + click-to-inspect ---------------- */
@@ -213,7 +264,7 @@ async function boot() {
   updateTimersButton();
   updateBuildingsButton();
   updateAmenitiesButton();
-  updateSimButton();
+  initSimControlsUI();
   updateRotationReadout();
   initResizablePanel($("#inspector"), "inspectorWidth");
   initResizablePanel($("#settingsPanel"), "settingsPanelWidth");

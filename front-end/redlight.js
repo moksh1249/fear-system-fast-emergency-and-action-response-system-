@@ -363,6 +363,13 @@ function getApproachCountdown(signal, clockSec, wayId) {
 function getRedlightCountdown(node, nodeId, clockSec, wayId) {
   const signal = node && node.signal;
   if (!signal) return { color: "red", remainingSec: 0 };
+  // An external override (see the "External control" section below) beats
+  // every other rule at this node - no phase/group logic runs at all while
+  // one is active, it's a hard forced state.
+  const override = State.externalOverrides.get(nodeId);
+  if (override) {
+    return { color: (override.wayId && override.wayId === wayId) ? "green" : "red", remainingSec: 0, overridden: true };
+  }
   if (signal.groupId) {
     const info = getGroupTurnInfo(signal.groupId, clockSec);
     if (info) {
@@ -377,13 +384,32 @@ function getRedlightCountdown(node, nodeId, clockSec, wayId) {
 
 /* ---------------- Simulation clock ---------------- */
 
-const Sim = { running: false, clockSec: 0, lastTs: null };
+const SIM_SPEED_MIN = 1;
+const SIM_SPEED_MAX = 24; // "up to 24x" per the fast-forward feature's own spec
+
+const Sim = {
+  running: false,
+  clockSec: 0,
+  lastTs: null,
+  speedMultiplier: 1, // simulated seconds per real second - 24x compresses a 12h run into 30 real minutes
+  durationSec: 0,     // 0 = unlimited; otherwise auto-pause once clockSec reaches this (see setSimDurationHours)
+};
 
 function simTick(ts) {
   if (Sim.running) {
     if (Sim.lastTs != null) {
-      const dt = Math.max(0, Math.min(0.25, (ts - Sim.lastTs) / 1000));
-      if (dt > 0) { Sim.clockSec += dt; markDirty(); }
+      const rawDt = Math.max(0, Math.min(0.25, (ts - Sim.lastTs) / 1000));
+      const dt = rawDt * (Sim.speedMultiplier || 1);
+      if (dt > 0) {
+        Sim.clockSec += dt;
+        if (Sim.durationSec > 0 && Sim.clockSec >= Sim.durationSec) {
+          Sim.clockSec = Sim.durationSec;
+          Sim.running = false;
+          updateSimButton();
+        }
+        updateSimDurationReadout();
+        markDirty();
+      }
     }
     Sim.lastTs = ts;
   } else {
@@ -394,18 +420,283 @@ function simTick(ts) {
 function toggleSim() {
   Sim.running = !Sim.running;
   updateSimButton();
+  updateSimDurationReadout();
   markDirty();
 }
 
 function resetSim() {
   Sim.clockSec = 0;
   Sim.lastTs = null;
+  updateSimButton();
+  updateSimDurationReadout();
   markDirty();
+}
+
+// Speed = simulated seconds elapsed per real second. Clamped to
+// [SIM_SPEED_MIN, SIM_SPEED_MAX]: above 24x the fixed-time phase countdowns
+// blur past too fast to read, and it isn't a real use case for this feature.
+function setSimSpeed(mult) {
+  const v = Math.max(SIM_SPEED_MIN, Math.min(SIM_SPEED_MAX, mult || 1));
+  Sim.speedMultiplier = v;
+  updateSimSpeedReadout();
+  updateSimDurationReadout();
+  return v;
+}
+
+// hours <= 0 means unlimited (no auto-pause, the old default behaviour).
+function setSimDurationHours(hours) {
+  const h = Math.max(0, hours || 0);
+  Sim.durationSec = h * 3600;
+  if (Sim.durationSec > 0 && Sim.clockSec > Sim.durationSec) Sim.clockSec = Sim.durationSec;
+  updateSimDurationReadout();
+  markDirty();
+  return h;
 }
 
 function updateSimButton() {
   const btn = $("#simPlayBtn");
   if (btn) btn.textContent = Sim.running ? "⏸ Pause" : "▶ Play";
+}
+
+function formatSimClock(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function updateSimSpeedReadout() {
+  const readout = $("#simSpeedReadout");
+  if (readout) readout.textContent = `${Sim.speedMultiplier}x`;
+}
+
+// Drives both the "NN:NN:NN elapsed" / "NN:NN:NN / NN:NN:NN" label and the
+// progress bar fill in the shared Simulation sidebar section (map-core.js
+// wires the slider/input that call into setSimSpeed/setSimDurationHours;
+// this is the one place that renders their effect back into the DOM).
+function updateSimDurationReadout() {
+  const bar = $("#simDurationBar");
+  const label = $("#simDurationLabel");
+  if (!bar || !label) return;
+  if (Sim.durationSec <= 0) {
+    bar.style.width = "0%";
+    label.textContent = `${formatSimClock(Sim.clockSec)} elapsed`;
+    return;
+  }
+  const pct = Math.min(100, (Sim.clockSec / Sim.durationSec) * 100);
+  bar.style.width = `${pct.toFixed(1)}%`;
+  let suffix = "";
+  if (Sim.running) {
+    const realRemainingSec = Math.max(0, (Sim.durationSec - Sim.clockSec) / (Sim.speedMultiplier || 1));
+    suffix = ` · ~${formatSimClock(realRemainingSec)} real time left`;
+  } else if (Sim.clockSec >= Sim.durationSec) {
+    suffix = " · done";
+  }
+  label.textContent = `${formatSimClock(Sim.clockSec)} / ${formatSimClock(Sim.durationSec)}${suffix}`;
+}
+
+// Called once from each page's boot() (after loadConfig()), so the shared
+// Simulation sidebar controls start out showing the persisted speed/duration
+// instead of the hardcoded 1x/unlimited defaults.
+function initSimControlsUI() {
+  const speed = setSimSpeed(Config.simSpeedMultiplier || 1);
+  const hours = setSimDurationHours(Config.simDurationHours || 0);
+  const slider = $("#simSpeedSlider");
+  if (slider) slider.value = String(speed);
+  const durInput = $("#simDurationHoursInput");
+  if (durInput) durInput.value = String(hours);
+  updateSimButton();
+  updateExternalControlStatus();
+  if (typeof updateSimPresetButtons === "function") updateSimPresetButtons();
+}
+
+/* ---------------- External control (network override) ---------------- */
+//
+// Any external process - a Python or C++ script (see backend/signal_control.py
+// and backend/signal_control_example.cpp), or the manual "Test override"
+// controls in the simulation inspector - can seize one intersection through
+// the server-side registry in serve.py (POST /api/signal/override), forcing
+// one approach green and every OTHER approach at that intersection red.
+// While held, that intersection's own fixed-time phase clock freezes in
+// place (see getNodeSignalClock below) so releasing control resumes the
+// cycle exactly where it left off, instead of jumping ahead by however long
+// the override lasted. A grouped intersection freezes the WHOLE group's
+// shared turn-taking clock, not just the overridden member's - group members
+// all read one clock (see getGroupTurnInfo), so freezing only one member's
+// view of it would desync who's "in control" the instant it unfreezes.
+//
+// The front-end never originates an override on its own - it only mirrors
+// whatever the server currently holds (see pollSignalOverrides), so an
+// external script and the in-browser test button go through the exact same
+// code path; there is no separate "local-only" override state.
+
+// Which clock this node's signal shares: its own, or (if joined into a
+// turn-taking group) the group's - freezing/unfreezing always happens at
+// this granularity, never per-approach.
+function freezeKeyFor(node, nodeId) {
+  return (node.signal && node.signal.groupId) ? `g:${node.signal.groupId}` : `n:${nodeId}`;
+}
+
+function freezeNodeClock(node, nodeId) {
+  const key = freezeKeyFor(node, nodeId);
+  let rec = State.signalFreeze.get(key);
+  if (!rec) { rec = { offset: 0, frozenAt: null, refCount: 0 }; State.signalFreeze.set(key, rec); }
+  if (rec.frozenAt == null) rec.frozenAt = Sim.clockSec - rec.offset;
+  rec.refCount++;
+  return key;
+}
+
+// refCount handles two different overrides landing on two different members
+// of the same group at once - the shared clock only actually resumes once
+// every hold on it has been released.
+function unfreezeNodeClock(key) {
+  const rec = State.signalFreeze.get(key);
+  if (!rec) return;
+  rec.refCount = Math.max(0, rec.refCount - 1);
+  if (rec.refCount === 0 && rec.frozenAt != null) {
+    rec.offset = Sim.clockSec - rec.frozenAt;
+    rec.frozenAt = null;
+  }
+}
+
+// The clock value this node's own fixed-time phase math should use: live
+// Sim.clockSec normally (scaled by Sim.speedMultiplier same as everywhere
+// else), or pinned at whatever it was the instant this node's signal (or its
+// whole group) was most recently frozen.
+function getNodeSignalClock(node, nodeId) {
+  const key = freezeKeyFor(node, nodeId);
+  const rec = State.signalFreeze.get(key);
+  if (!rec) return Sim.clockSec;
+  return rec.frozenAt != null ? rec.frozenAt : Sim.clockSec - rec.offset;
+}
+
+// serverOverrides: {nodeId: {wayId, controller, since}} - the server's
+// current registry (GET /api/signal/overrides in serve.py). Diffs it against
+// State.externalOverrides and freezes/unfreezes each affected node's clock
+// accordingly. This is the ONLY place overrides ever get applied to State.
+function applyOverrideSnapshot(serverOverrides) {
+  const incoming = serverOverrides || {};
+  let changed = false;
+
+  for (const [nodeId] of Array.from(State.externalOverrides)) {
+    if (incoming[nodeId]) continue; // still held
+    const node = State.nodes.get(nodeId);
+    if (node) unfreezeNodeClock(freezeKeyFor(node, nodeId));
+    State.externalOverrides.delete(nodeId);
+    changed = true;
+  }
+
+  for (const [nodeId, ov] of Object.entries(incoming)) {
+    const node = State.nodes.get(nodeId);
+    if (!node) continue; // override for a node that isn't in the currently loaded map - ignore
+    if (!State.externalOverrides.has(nodeId)) {
+      freezeNodeClock(node, nodeId);
+      changed = true;
+    }
+    State.externalOverrides.set(nodeId, { wayId: ov.wayId || null, controller: ov.controller || "unknown", since: ov.since || null });
+  }
+
+  if (changed) {
+    markDirty();
+    // The currently-inspected node's own panel (see simulation.js's
+    // renderExternalControlPanel) reads State.externalOverrides directly and
+    // has no other way to learn about a change that came from a background
+    // poll - an external script taking/releasing control while the user has
+    // that exact intersection open needs to show up live, not just in the
+    // sidebar, or "visible in the simulation viewer" would only be true
+    // for changes the user themselves triggered from this same page.
+    if (typeof renderInspector === "function") renderInspector();
+  }
+  updateExternalControlStatus();
+  return changed;
+}
+
+let _overridePollInFlight = false;
+async function pollSignalOverrides() {
+  if (_overridePollInFlight) return;
+  _overridePollInFlight = true;
+  try {
+    const res = await fetch("/api/signal/overrides", { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.ok) applyOverrideSnapshot(data.overrides || {});
+    }
+  } catch (e) {
+    // serve.py not reachable (or the page was opened via file://) - nothing to sync this tick
+  } finally {
+    _overridePollInFlight = false;
+  }
+}
+
+setInterval(pollSignalOverrides, 750);
+
+async function releaseSignalOverride(nodeId, token, force) {
+  try {
+    await fetch("/api/signal/release", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeId, token: token || undefined, force: !!force }),
+    });
+  } catch (e) { /* best-effort - the next poll will reflect reality either way */ }
+  // Awaited (not fire-and-forget): callers immediately re-render whatever
+  // panel shows this override right after this resolves (see
+  // releaseManualOverride), and that render needs State.externalOverrides
+  // to already reflect the release, not whatever the last periodic poll
+  // happened to see.
+  await pollSignalOverrides();
+}
+
+// nodeId -> token, so the in-browser "Test override" button only ever
+// releases holds it took itself, never someone else's (a real script's).
+const _manualOverrideTokens = new Map();
+
+async function requestSignalOverride(nodeId, wayId, controller) {
+  try {
+    const res = await fetch("/api/signal/override", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nodeId, wayId: wayId || null, controller: controller || "manual-test-ui" }),
+    });
+    const data = await res.json();
+    if (!data.ok) { toast(data.error || "Could not take control"); return null; }
+    _manualOverrideTokens.set(nodeId, data.token);
+    // Awaited for the same reason as in releaseSignalOverride - the caller
+    // re-renders right after this resolves and needs State.externalOverrides
+    // to already include this override, not lag a poll cycle behind it.
+    await pollSignalOverrides();
+    return data.token;
+  } catch (e) {
+    toast("Could not reach the server to take control");
+    return null;
+  }
+}
+
+async function releaseManualOverride(nodeId) {
+  const token = _manualOverrideTokens.get(nodeId);
+  await releaseSignalOverride(nodeId, token, false);
+  _manualOverrideTokens.delete(nodeId);
+}
+
+function updateExternalControlStatus() {
+  const countEl = $("#extControlCount");
+  const listEl = $("#extControlList");
+  if (!countEl || !listEl) return;
+  const entries = Array.from(State.externalOverrides.entries());
+  countEl.textContent = entries.length
+    ? `${entries.length} intersection${entries.length > 1 ? "s" : ""} under external control`
+    : "No active external control";
+  listEl.innerHTML = "";
+  for (const [nodeId, ov] of entries) {
+    listEl.append(el("div", { class: "ext-ctrl-row" },
+      el("span", { class: "ext-ctrl-node", title: `Forcing ${ov.wayId || "ALL approaches"} ${ov.wayId ? "green" : "red"}` }, nodeId),
+      el("span", { class: "ext-ctrl-by" }, ov.controller),
+      el("button", {
+        title: "Force-release this intersection's external control",
+        onclick: () => releaseSignalOverride(nodeId, null, true),
+      }, "Release"),
+    ));
+  }
 }
 
 /* ---------------- Rendering ---------------- */
@@ -424,16 +715,58 @@ function drawRedlights() {
     // (see addDirectionalRedlightOnWay) leave the other side unlit.
     const litWayIds = new Set();
     for (const p of node.signal.phases) for (const wid of p.wayIds) litWayIds.add(wid);
+    // The node's OWN effective clock - live, or pinned at its freeze point
+    // while under external control (see getNodeSignalClock) - never the raw
+    // Sim.clockSec directly, so a frozen intersection's lamps truly stop
+    // changing instead of just showing a forced colour on top of a clock
+    // that's still silently ticking underneath.
+    const nodeClock = getNodeSignalClock(node, nodeId);
+    const overridden = State.externalOverrides.has(nodeId);
     for (const a of approachableWaysSorted(nodeId)) {
       if (!litWayIds.has(a.wayId)) continue;
-      const cd = getRedlightCountdown(node, nodeId, Sim.clockSec, a.wayId);
+      const cd = getRedlightCountdown(node, nodeId, nodeClock, a.wayId);
       // The stop line acts like a wall: present while this approach is
       // stopped (red/yellow), gone the instant it turns green - rather than
       // a fixed marking regardless of colour.
       if (cd.color !== "green") drawStopLine(node, nodeId, a);
-      drawLampGlyph(node, a, cd.color, cd.remainingSec);
+      drawLampGlyph(node, a, cd.color, cd.remainingSec, overridden);
     }
+    if (overridden) drawExternalControlBadge(node);
   }
+}
+
+// A pulsing dashed violet ring + label floating above an overridden
+// intersection, on top of the per-lamp ring drawLampGlyph already draws -
+// visible even before you zoom in far enough to make out individual lamps,
+// so "this intersection is currently held by an external script" reads at a
+// glance while panning the whole map (the explicit ask behind this feature:
+// external control needs to be visible in the simulation viewer, not just
+// technically in effect).
+const EXT_CONTROL_COLOR = "#7b2ff7";
+
+function drawExternalControlBadge(node) {
+  const sp = worldToScreen(node.x, node.y);
+  if (sp.x < -40 || sp.x > cssW() + 40 || sp.y < -40 || sp.y > cssH() + 40) return;
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 220);
+  const r = 16 + pulse * 4;
+  ctx.save();
+  ctx.setLineDash([6, 5]);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = EXT_CONTROL_COLOR;
+  ctx.beginPath();
+  ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = "bold 10px 'Space Grotesk', sans-serif";
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  const label = "EXT CONTROL";
+  const ty = sp.y - r - 6;
+  ctx.strokeText(label, sp.x, ty);
+  ctx.fillStyle = EXT_CONTROL_COLOR;
+  ctx.fillText(label, sp.x, ty);
+  ctx.restore();
 }
 
 // A thin stop-bar across the lane a lit approach governs - same idea as the
@@ -535,7 +868,7 @@ const LAMP_MAX_RADIUS_PX = 12;
 const LAMP_FORWARD_OFFSET_M = 5;   // extra stand-off beyond the stop line, along the road
 const LAMP_LATERAL_MARGIN_M = 0.8; // extra margin beyond the kerb edge (two-way roads only)
 
-function drawLampGlyph(node, approach, color, remainingSec) {
+function drawLampGlyph(node, approach, color, remainingSec, overridden) {
   const liveScale = State.view.scale;
   const mult = Config.signalLampSizeMultiplier || 1;
   // sizingScale drives how big the glyph renders (in px) - it has no bearing
@@ -594,18 +927,33 @@ function drawLampGlyph(node, approach, color, remainingSec) {
   ctx.fill();
   ctx.restore();
 
-  // Countdown label
+  // Dashed violet ring around this one lamp when it's a forced state from an
+  // external override, distinct from the whole-intersection pulsing badge
+  // drawExternalControlBadge draws (that one's visible from further away;
+  // this one pins the override to the exact approach it's forcing).
+  if (overridden) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, radius + 3, 0, Math.PI * 2);
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = EXT_CONTROL_COLOR;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Countdown label (or "CTRL" while a remainingSec-less forced state is in effect)
   if (Config.showSignalTimers && radius >= LAMP_MAX_RADIUS_PX * mult * 0.5) {
     ctx.save();
     ctx.font = `bold ${Math.round(Math.min(13, Math.max(9, radius + 2)))}px 'Space Grotesk', sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    const label = String(Math.max(0, Math.ceil(remainingSec)));
+    const label = overridden ? "CTRL" : String(Math.max(0, Math.ceil(remainingSec)));
     const ty = sp.y + radius + 2;
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = "rgba(255,255,255,0.9)";
     ctx.strokeText(label, sp.x, ty);
-    ctx.fillStyle = "#1a1a2e";
+    ctx.fillStyle = overridden ? EXT_CONTROL_COLOR : "#1a1a2e";
     ctx.fillText(label, sp.x, ty);
     ctx.restore();
   }

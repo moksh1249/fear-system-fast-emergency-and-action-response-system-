@@ -4,6 +4,13 @@ map_data.json (browsers block fetch() of local files opened via file://),
 and accepts POST /api/save from the editor's Save button to write the
 current map straight back into map_data.json on disk.
 
+Also exposes /api/signal/override, /api/signal/release and
+/api/signal/overrides - a tiny JSON API any external Python or C++ script
+can use to take control of a traffic light intersection while this server
+is running (see the SIGNAL_OVERRIDES comment below for the full contract,
+and backend/signal_control.py / backend/signal_control_example.cpp for
+ready-to-run clients).
+
 Run:
     python serve.py
 Then open the printed URL in a browser.
@@ -19,6 +26,7 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 
@@ -68,6 +76,31 @@ CH_META_PATH = os.path.join(MAPS_DIR, "map_data.ch.meta.json")
 # single start/end query. Compiled on demand the same way as ch_preprocess.
 CH_QUERY_SRC = os.path.join(CH_DIR, "ch_query.cpp")
 CH_QUERY_EXE = os.path.join(CH_DIR, "ch_query.exe" if os.name == "nt" else "ch_query")
+
+# ============================================================
+# EXTERNAL SIGNAL CONTROL - lets any process (a Python or C++ script, see
+# backend/signal_control.py and backend/signal_control_example.cpp, or the
+# "Test override" button in the simulation viewer's own inspector) take
+# control of a traffic light intersection over plain HTTP.
+#
+# This is a dumb in-memory registry, nothing more: it doesn't know about the
+# map's actual topology (nodes/ways), doesn't validate that a wayId is a real
+# approach at that node, and doesn't persist across a server restart. All the
+# real meaning - forcing one approach green and every other red, freezing
+# that intersection's phase clock while held, resuming it on release - lives
+# entirely in the front-end (see front-end/redlight.js's "External control"
+# section), which polls GET /api/signal/overrides and reacts to whatever's
+# here. An unrecognized nodeId/wayId is simply ignored client-side (or, for a
+# wayId that doesn't match any real approach, every lamp at that
+# intersection shows red) - a safe, fail-red default rather than a crash.
+#
+# SIGNAL_OVERRIDES: nodeId -> {"wayId": str|None, "controller": str,
+#                               "token": str, "since": float (unix time)}
+# wayId=None means "force every approach at this intersection red" (a full
+# stop / emergency-preemption style hold) rather than picking one green.
+# ============================================================
+SIGNAL_OVERRIDES = {}
+_signal_lock = threading.Lock()
 
 
 def _ch_log(msg):
@@ -200,7 +233,76 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.directory = saved_directory
         return super().translate_path(path)
 
+    def do_GET(self):
+        if self.path == "/api/signal/overrides":
+            with _signal_lock:
+                overrides = {
+                    node_id: {"wayId": v["wayId"], "controller": v["controller"], "since": v["since"]}
+                    for node_id, v in SIGNAL_OVERRIDES.items()
+                }
+            self._send_json(200, {"ok": True, "overrides": overrides})
+            return
+        super().do_GET()
+
     def do_POST(self):
+        if self.path == "/api/signal/override":
+            # See the SIGNAL_OVERRIDES comment above for the full contract.
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length)
+                body = json.loads(raw)
+                node_id = str(body.get("nodeId", "")).strip()
+                if not node_id:
+                    raise ValueError("missing nodeId")
+                way_id_raw = body.get("wayId")
+                way_id = str(way_id_raw).strip() if way_id_raw not in (None, "") else None
+                controller = str(body.get("controller") or "unknown").strip()[:200]
+                force = bool(body.get("force"))
+                token = str(body.get("token") or "").strip() or uuid.uuid4().hex
+
+                with _signal_lock:
+                    existing = SIGNAL_OVERRIDES.get(node_id)
+                    if existing and existing["token"] != token and not force:
+                        self._send_json(409, {
+                            "ok": False,
+                            "error": f"'{node_id}' is already under external control (by {existing['controller']!r}) - pass force:true to steal it",
+                        })
+                        return
+                    SIGNAL_OVERRIDES[node_id] = {
+                        "wayId": way_id, "controller": controller, "token": token, "since": time.time(),
+                    }
+                self._send_json(200, {"ok": True, "token": token})
+            except Exception as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            return
+
+        if self.path == "/api/signal/release":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length)
+                body = json.loads(raw)
+                node_id = str(body.get("nodeId", "")).strip()
+                token = str(body.get("token") or "").strip()
+                force = bool(body.get("force"))
+                with _signal_lock:
+                    existing = SIGNAL_OVERRIDES.get(node_id)
+                    if existing and (force or existing["token"] == token):
+                        del SIGNAL_OVERRIDES[node_id]
+                self._send_json(200, {"ok": True})
+            except Exception as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            return
+
+        if self.path == "/api/signal/release-all":
+            # Admin/testing convenience (wired to no UI by default beyond the
+            # per-row "Release" buttons, which force-release one at a time) -
+            # clears every held override in one call, e.g. after a test
+            # script crashed without releasing.
+            with _signal_lock:
+                SIGNAL_OVERRIDES.clear()
+            self._send_json(200, {"ok": True})
+            return
+
         if self.path == "/api/shutdown":
             self._send_json(200, {"ok": True})
             # Run in a separate thread: shutdown() blocks until serve_forever's

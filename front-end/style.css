@@ -691,3 +691,95 @@ body{
 .vehicle-row > button:last-child:hover{
   background: var(--danger); color:#fff;
 }
+
+/* ============================================================
+   SIMULATION SIDEBAR CONTROLS (sim clock, fast-forward, duration)
+   Dark sidebar, so labels/chips need their own contrast instead of
+   the .field/.section-title styles built for the light panels above.
+   ============================================================ */
+.sim-clock-row{ margin: 8px 0 4px; }
+.sim-clock-value{
+  display:inline-block; font-size:11px; font-weight:700; font-variant-numeric: tabular-nums;
+  color: var(--text); background: var(--bg);
+  border: 2px solid var(--border); border-radius: var(--radius-sm);
+  padding: 3px 8px;
+}
+.sim-progress-track{
+  height: 10px; margin-bottom: 10px;
+  background: rgba(255,255,255,0.08);
+  border: 2px solid rgba(255,255,255,0.15); border-radius: var(--radius-sm);
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+.sim-progress-fill{
+  height: 100%; width: 0%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.sim-control-block{ margin-top: 10px; }
+.sim-control-label{
+  display:block; font-size:10px; font-weight:700; letter-spacing:.06em;
+  text-transform: uppercase; color: rgba(255,255,255,0.45);
+  margin-bottom: 5px;
+}
+.sim-number-input{
+  width:100%; padding:7px 10px;
+  border:2px solid var(--border); border-radius: var(--radius-sm);
+  font-size:13px; font-family: var(--font); font-weight:500;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+  background:#fff; color: var(--text);
+}
+.sim-speed-presets{ display:flex; gap:4px; margin-top:6px; }
+#sidebar .sim-speed-presets .sim-preset-btn{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:auto; flex:1; margin-bottom:0; padding:5px 2px; font-size:11px;
+}
+
+/* ============================================================
+   EXTERNAL CONTROL (sidebar status list + inspector test panel)
+   Violet is used nowhere else in this palette, so it reads
+   unambiguously as "an outside process has seized this light" -
+   matches EXT_CONTROL_COLOR in redlight.js's canvas rendering.
+   ============================================================ */
+.ext-ctrl-count{
+  font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.65);
+  margin-bottom: 6px;
+}
+.ext-ctrl-list{ display:flex; flex-direction:column; gap:6px; }
+.ext-ctrl-row{
+  display:flex; align-items:center; gap:6px;
+  background: rgba(123,47,247,0.18);
+  border: 2px solid #7b2ff7; border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+}
+.ext-ctrl-node{
+  flex:1; min-width:0; font-weight:700; font-size:11px; color:#fff;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.ext-ctrl-by{
+  font-size:10px; font-weight:600; color: rgba(255,255,255,0.65);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:70px;
+}
+#sidebar .ext-ctrl-row button{
+  display:inline-flex; width:auto; margin-bottom:0;
+  padding: 4px 8px; font-size: 10px; font-weight:700;
+  background:#7b2ff7; color:#fff; border-color:#7b2ff7;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.3);
+}
+#sidebar .ext-ctrl-row button:hover{ background:#6412d9; }
+.ext-ctrl-hint{
+  margin-top:8px; font-size:10.5px; font-weight:500; line-height:1.4;
+  color: rgba(255,255,255,0.4);
+}
+
+/* Inspector panel version (light background) - shown when the selected
+   intersection is currently under external control, or offers the manual
+   test-override controls when it isn't. */
+.ext-ctrl-banner{
+  border-left: 4px solid #7b2ff7; background: rgba(123,47,247,0.08);
+  border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 10px;
+  font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--text);
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.08);
+}

@@ -28,6 +28,8 @@ const CONFIG_DEFAULTS = {
   iconSizeMultiplier: 1,
   inspectorWidth: 340,
   settingsPanelWidth: 340,
+  simSpeedMultiplier: 1,   // 1x-24x fast-forward, see redlight.js's Sim.speedMultiplier
+  simDurationHours: 0,     // 0 = unlimited; otherwise auto-pause once the sim clock reaches this
 };
 
 const Config = { ...CONFIG_DEFAULTS };
