@@ -129,53 +129,103 @@ function renderInspector() {
   }
 }
 
+// Builds an up-to-8-checkbox grid (one row per approach, one checkbox per
+// movement) - lets the user force ANY combination of lamps green, from a
+// single one of the 8 up to a whole custom phase, exactly matching what an
+// external script can do via greenLamps (see redlight.js's
+// requestSignalOverride/bothMovementsFor). `selectedLamps` (a greenLamps
+// array) pre-checks the matching boxes - pass the current override's own
+// list for the change-lamps form, or omit for none checked (fresh
+// take-control form).
+function buildLampCheckboxGrid(approaches, selectedLamps) {
+  const selectedSet = new Set((selectedLamps || []).map((g) => `${g.wayId}|${g.movement}`));
+  const grid = el("div", { class: "lamp-grid" });
+  const checkboxes = [];
+  approaches.forEach((a, i) => {
+    const row = el("div", { class: "lamp-grid-row" });
+    row.append(el("span", { class: "lamp-grid-label" }, `${a.wayId} (approach ${i + 1})`));
+    for (const movement of ["through", "right"]) {
+      const chk = el("input", { type: "checkbox" });
+      chk.checked = selectedSet.has(`${a.wayId}|${movement}`);
+      checkboxes.push({ wayId: a.wayId, movement, input: chk });
+      row.append(el("label", { class: "lamp-grid-chk" }, chk, movement === "through" ? "↑ Straight" : "↱ Right"));
+    }
+    grid.append(row);
+  });
+  return { grid, getSelectedLamps: () => checkboxes.filter((c) => c.input.checked).map((c) => ({ wayId: c.wayId, movement: c.movement })) };
+}
+
 // The manual "Test override" panel for a traffic-light intersection - takes
-// the exact same server round trip a real Python/C++ script would (see
+// the exact same server round trips a real Python/C++ script would (see
 // redlight.js's requestSignalOverride/releaseManualOverride, and
 // backend/signal_control.py's module docstring for the full HTTP contract),
 // so this is a way to try the external-control feature out without writing
-// a script first.
+// a script first - down to taking control of any single one of the (up to)
+// 8 lamps, or any combination of them (a whole phase), not just a whole
+// approach. When this page itself holds the override, it can also change
+// which lamps are forced without releasing first (requestSignalOverride
+// resends this page's own token, which the server treats as updating the
+// existing hold - see the "since" comment in serve.py's override handler).
 function renderExternalControlPanel(nodeId) {
   const wrap = el("div", {});
   wrap.append(el("div", { class: "section-title" }, "Traffic light · external control"));
 
   const override = State.externalOverrides.get(nodeId);
+  const approaches = approachableWaysSorted(nodeId);
+
   if (override) {
-    const forcing = override.wayId
-      ? `forcing ${override.wayId} green, every other approach red`
-      : "forcing every approach red (full stop)";
     wrap.append(el("div", { class: "ext-ctrl-banner" },
-      `Under external control by "${override.controller}" - ${forcing}. This intersection's phase clock is frozen and will resume right where it left off once released.`));
+      `Under external control by "${override.controller}" - forcing: ${describeGreenLamps(override.greenLamps)}. This intersection's phase clock is frozen and will resume right where it left off once released.`));
+
+    const ownedHere = isManualOverrideOwner(nodeId);
+    if (ownedHere && approaches.length) {
+      const { grid, getSelectedLamps } = buildLampCheckboxGrid(approaches, override.greenLamps);
+      const changeBtn = el("button", {
+        onclick: async () => {
+          changeBtn.disabled = true;
+          changeBtn.textContent = "Switching...";
+          await requestSignalOverride(nodeId, getSelectedLamps(), "manual-test-ui");
+          renderInspector();
+        },
+      }, "⇄ Update forced lamps");
+      wrap.append(
+        el("div", { class: "field" }, el("label", {}, "Forced-green lamps (check any combination)"), grid),
+        changeBtn,
+      );
+    }
+
     const releaseBtn = el("button", {
       onclick: async () => {
         releaseBtn.disabled = true;
         releaseBtn.textContent = "Releasing...";
-        await releaseManualOverride(nodeId);
+        if (ownedHere) await releaseManualOverride(nodeId);
+        else await releaseSignalOverride(nodeId, null, true); // not ours - force it
         renderInspector();
       },
-    }, "◼ Release control (test)");
+    }, ownedHere ? "◼ Release control (test)" : "◼ Force-release (test)");
     wrap.append(releaseBtn);
+    if (!ownedHere) {
+      wrap.append(el("div", { class: "readonly" },
+        "Held by another script/tab, so this page can't change its lamps - only release (or force-release) it and take control fresh."));
+    }
     return wrap;
   }
 
-  const approaches = approachableWaysSorted(nodeId);
   if (!approaches.length) {
     wrap.append(el("div", { class: "readonly" }, "No approaches to force green."));
     return wrap;
   }
-  const waySelect = el("select", {},
-    ...approaches.map((a, i) => el("option", { value: a.wayId }, `${a.wayId} (approach ${i + 1})`)),
-    el("option", { value: "" }, "— none: force all red —"));
+  const { grid, getSelectedLamps } = buildLampCheckboxGrid(approaches);
   const takeBtn = el("button", {
     onclick: async () => {
       takeBtn.disabled = true;
       takeBtn.textContent = "Taking control...";
-      await requestSignalOverride(nodeId, waySelect.value || null, "manual-test-ui");
+      await requestSignalOverride(nodeId, getSelectedLamps(), "manual-test-ui");
       renderInspector();
     },
   }, "▶ Take control (test override)");
   wrap.append(
-    el("div", { class: "field" }, el("label", {}, "Force this approach green"), waySelect),
+    el("div", { class: "field" }, el("label", {}, "Lamps to force green (leave all unchecked to force all-red)"), grid),
     takeBtn,
     el("div", { class: "readonly" }, "This is the same request any external Python/C++ script uses - see backend/signal_control.py."),
   );

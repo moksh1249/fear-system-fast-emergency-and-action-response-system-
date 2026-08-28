@@ -783,3 +783,29 @@ body{
   font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--text);
   box-shadow: 2px 2px 0 rgba(26,26,46,0.08);
 }
+
+/* ============================================================
+   LAMP CHECKBOX GRID (external-control test panel - pick any
+   combination of the up to 8 lamps at an intersection to force green)
+   ============================================================ */
+.lamp-grid{
+  border: 2px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 10px; background: var(--bg);
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.08);
+}
+.lamp-grid-row{
+  display:flex; align-items:center; gap:10px;
+  padding: 5px 0; border-bottom: 1.5px dashed var(--panel-border);
+}
+.lamp-grid-row:last-child{ border-bottom: none; }
+.lamp-grid-label{
+  flex: 1 1 auto; min-width: 0; font-size: 11px; font-weight: 700;
+  color: var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.lamp-grid-chk{
+  display:flex; align-items:center; gap:4px; flex-shrink:0;
+  font-size: 11px; font-weight: 600; color: var(--muted); cursor:pointer;
+}
+.lamp-grid-chk input[type=checkbox]{
+  width:15px; height:15px; accent-color: #7b2ff7; cursor:pointer;
+}

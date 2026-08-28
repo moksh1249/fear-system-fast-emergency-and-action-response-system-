@@ -94,10 +94,23 @@ CH_QUERY_EXE = os.path.join(CH_DIR, "ch_query.exe" if os.name == "nt" else "ch_q
 # wayId that doesn't match any real approach, every lamp at that
 # intersection shows red) - a safe, fail-red default rather than a crash.
 #
-# SIGNAL_OVERRIDES: nodeId -> {"wayId": str|None, "controller": str,
+# SIGNAL_OVERRIDES: nodeId -> {"greenLamps": [{"wayId": str, "movement":
+#                               "through"|"right"}, ...], "controller": str,
 #                               "token": str, "since": float (unix time)}
-# wayId=None means "force every approach at this intersection red" (a full
-# stop / emergency-preemption style hold) rather than picking one green.
+# greenLamps lists EXACTLY which (wayId, movement) lamps this hold forces
+# green - every other lamp at that intersection is forced red. An empty list
+# means "force every lamp red" (a full stop / emergency-preemption style
+# hold) rather than picking any green. A single entry takes control of one
+# of the (up to) 8 individual lamps at a 4-way intersection; multiple
+# entries can force an arbitrary combination green at once - e.g. an entire
+# approach (both its movements) or one of the paired-4-way scheme's own
+# phases (see front-end/redlight.js's "Paired 4-way choreography" section).
+#
+# For backward compatibility, a request may instead send the OLDER
+# {"wayId": str|None} shape (no movement granularity) - see do_POST below,
+# which expands that into greenLamps = both movements of that wayId (or []
+# if wayId is null), i.e. exactly the old "force this whole approach green"
+# behaviour.
 # ============================================================
 SIGNAL_OVERRIDES = {}
 _signal_lock = threading.Lock()
@@ -237,7 +250,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/signal/overrides":
             with _signal_lock:
                 overrides = {
-                    node_id: {"wayId": v["wayId"], "controller": v["controller"], "since": v["since"]}
+                    node_id: {"greenLamps": v["greenLamps"], "controller": v["controller"], "since": v["since"]}
                     for node_id, v in SIGNAL_OVERRIDES.items()
                 }
             self._send_json(200, {"ok": True, "overrides": overrides})
@@ -254,8 +267,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 node_id = str(body.get("nodeId", "")).strip()
                 if not node_id:
                     raise ValueError("missing nodeId")
-                way_id_raw = body.get("wayId")
-                way_id = str(way_id_raw).strip() if way_id_raw not in (None, "") else None
+
+                if "greenLamps" in body and body["greenLamps"] is not None:
+                    green_lamps = []
+                    for lamp in body["greenLamps"]:
+                        lamp_way_id = str(lamp.get("wayId", "")).strip()
+                        movement = str(lamp.get("movement", "")).strip()
+                        if not lamp_way_id or movement not in ("through", "right"):
+                            raise ValueError(f"malformed greenLamps entry: {lamp!r}")
+                        green_lamps.append({"wayId": lamp_way_id, "movement": movement})
+                else:
+                    # Legacy shape: a single wayId (or null for all-red) with
+                    # no movement granularity - expands to "both movements of
+                    # this approach", the old override's exact behaviour.
+                    way_id_raw = body.get("wayId")
+                    way_id = str(way_id_raw).strip() if way_id_raw not in (None, "") else None
+                    green_lamps = (
+                        [{"wayId": way_id, "movement": "through"}, {"wayId": way_id, "movement": "right"}]
+                        if way_id else []
+                    )
+
                 controller = str(body.get("controller") or "unknown").strip()[:200]
                 force = bool(body.get("force"))
                 token = str(body.get("token") or "").strip() or uuid.uuid4().hex
@@ -268,8 +299,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             "error": f"'{node_id}' is already under external control (by {existing['controller']!r}) - pass force:true to steal it",
                         })
                         return
+                    # The same token re-asserting (a script or the manual test
+                    # UI switching which lamps are green) is a CHANGE to an
+                    # existing hold, not a new one - keep the original "since"
+                    # so it still reads as one continuous hold, not a series
+                    # of fresh ones every time the forced lamps change. A
+                    # brand new hold, or a force-steal from a different
+                    # controller, does get a fresh "since".
+                    since = existing["since"] if (existing and existing["token"] == token) else time.time()
                     SIGNAL_OVERRIDES[node_id] = {
-                        "wayId": way_id, "controller": controller, "token": token, "since": time.time(),
+                        "greenLamps": green_lamps, "controller": controller, "token": token, "since": since,
                     }
                 self._send_json(200, {"ok": True, "token": token})
             except Exception as e:

@@ -87,6 +87,10 @@ function approachableWaysSorted(nodeId) {
 
 /* ---------------- Create / remove a redlight instance ---------------- */
 
+// Default per-step duration for a NEW paired-4-way signal's choreography -
+// see the big comment above pairedMovementState for what a "step" is.
+const PAIRED_DEFAULT_STEP_SEC = 15;
+
 function addRedlight(nodeId) {
   // A joined group (see junctionCluster) always gets ONE signal governing
   // every member's approaches - resolving to the primary here means it
@@ -97,10 +101,33 @@ function addRedlight(nodeId) {
   if (!node) return;
   const approaches = approachableWaysSorted(primaryId);
   const n = approaches.length;
-  let groups;
+
+  // A real 4-way junction gets the choreographed paired scheme by default
+  // (see the "Paired 4-way choreography" section below) - it only makes
+  // sense with exactly two opposite pairs, so every other shape (3-way,
+  // 5+-way, directional single-approach lights) keeps the older simple
+  // phase-list scheme instead.
   if (n === 4) {
-    groups = [[approaches[0], approaches[2]], [approaches[1], approaches[3]]];
-  } else if (n === 3) {
+    node.signal = {
+      allRedSec: 2,
+      scheme: "paired4way",
+      paired: {
+        pairs: [
+          { wayIds: [approaches[0].wayId, approaches[2].wayId], stepSec: PAIRED_DEFAULT_STEP_SEC },
+          { wayIds: [approaches[1].wayId, approaches[3].wayId], stepSec: PAIRED_DEFAULT_STEP_SEC },
+        ],
+        yellowSec: 3,
+      },
+      phases: [],
+      facing: "inward",
+    };
+    node.tags = node.tags || {};
+    node.tags.highway = "traffic_signals";
+    return;
+  }
+
+  let groups;
+  if (n === 3) {
     // A T-junction only needs 2 phases, not 3: the two approaches that form
     // the through road (most nearly opposite each other) don't conflict and
     // can run together, leaving the third (the stem of the T) as the only
@@ -117,7 +144,7 @@ function addRedlight(nodeId) {
   } else {
     groups = approaches.map(a => [a]);
   }
-  const grouped = n === 3 || n === 4;
+  const grouped = n === 3;
   const phases = groups.map((g, i) => ({
     id: `ph_${i + 1}`,
     label: grouped ? `Phase ${i + 1}` : `Approach ${i + 1}`,
@@ -125,9 +152,49 @@ function addRedlight(nodeId) {
     greenSec: 25,
     yellowSec: 3,
   }));
-  node.signal = { allRedSec: 2, phases, facing: "inward" };
+  node.signal = { allRedSec: 2, scheme: "phases", phases, facing: "inward" };
   node.tags = node.tags || {};
   node.tags.highway = "traffic_signals";
+}
+
+// Rebuilds a 4-way node's signal into the paired scheme from scratch
+// (fresh default timings) - used by the "Switch to paired 4-way" editor
+// button. Only ever called on a node that already has exactly 4 approaches
+// (the button itself is gated on that), so it can reuse addRedlight's own
+// 4-way branch directly rather than duplicating it.
+function convertToPairedScheme(nodeId) {
+  const primaryId = (typeof junctionPrimary === "function") ? junctionPrimary(nodeId) : nodeId;
+  const node = State.nodes.get(primaryId);
+  if (!node || !node.signal) return;
+  const facing = node.signal.facing;
+  const groupId = node.signal.groupId;
+  addRedlight(primaryId);
+  node.signal.facing = facing;
+  if (groupId) node.signal.groupId = groupId;
+}
+
+// The inverse - rebuilds a 4-way node's signal into the plain simple
+// phase-list scheme (two phases, opposite pairs, same as this project used
+// before the paired scheme existed) - the paired scheme's "Switch to manual
+// phases" escape hatch.
+function convertToPhaseScheme(nodeId) {
+  const primaryId = (typeof junctionPrimary === "function") ? junctionPrimary(nodeId) : nodeId;
+  const node = State.nodes.get(primaryId);
+  if (!node || !node.signal) return;
+  const approaches = approachableWaysSorted(primaryId);
+  const groups = approaches.length === 4
+    ? [[approaches[0], approaches[2]], [approaches[1], approaches[3]]]
+    : approaches.map(a => [a]);
+  const phases = groups.map((g, i) => ({
+    id: `ph_${i + 1}`,
+    label: `Phase ${i + 1}`,
+    wayIds: g.map(a => a.wayId),
+    greenSec: 25,
+    yellowSec: 3,
+  }));
+  const facing = node.signal.facing, groupId = node.signal.groupId, allRedSec = node.signal.allRedSec;
+  node.signal = { allRedSec, scheme: "phases", phases, facing };
+  if (groupId) node.signal.groupId = groupId;
 }
 
 // Places a light mid-road on a two-way way, governing ONLY the direction of
@@ -291,7 +358,9 @@ function nodeGroupWaitSec(groupId, nodeId, clockSec) {
 /* ---------------- Fixed-time phase math (single intersection) ---------------- */
 
 function redlightCycleLength(signal) {
-  if (!signal || !signal.phases || !signal.phases.length) return 0;
+  if (!signal) return 0;
+  if (signal.scheme === "paired4way") return pairedMasterCycleLen(signal);
+  if (!signal.phases || !signal.phases.length) return 0;
   const allRed = Math.max(0, signal.allRedSec || 0);
   return signal.phases.reduce((sum, p) => sum + Math.max(0, p.greenSec || 0) + Math.max(0, p.yellowSec || 0) + allRed, 0);
 }
@@ -355,20 +424,137 @@ function getApproachCountdown(signal, clockSec, wayId) {
   return { color: "red", remainingSec: cycle }; // not assigned to any phase
 }
 
-// Group-aware per-approach color + countdown: if this node is in a group and
-// it isn't currently its turn, every approach is red until the turn arrives;
-// otherwise defers to the node's own phase plan, restarted at the top for
-// each turn (via a clock local to that turn) so a turn always begins at
-// phase 1 rather than wherever the raw clock happens to land.
-function getRedlightCountdown(node, nodeId, clockSec, wayId) {
+/* ---------------- Paired 4-way choreography ---------------- */
+//
+// An alternative to the plain phase-list scheme above, generated by default
+// for a genuinely 4-way intersection (see addRedlight) and ONLY valid for
+// one - it depends on there being exactly two opposite-approach pairs. Each
+// approach has two independently-timed lamps (through/right - see
+// LAMP_MOVEMENT_SPACING_M), and one PAIR (e.g. north+south) runs this whole
+// 4-step choreography before handing off to the other pair (e.g. east+west,
+// with an allRedSec clearance at the handoff, same field as the plain
+// scheme uses between phases):
+//   step 1: A-through ON, A-right ON               (B fully red)
+//   step 2: A-right OFF, B-through ON               (A-through stays on)
+//   step 3: A-through OFF, B-right ON               (B-through stays on)
+//   step 4: B-right OFF, A-through ON               (B-through stays on)
+//   -> back to step 1 (A-right ON again, B-through OFF)
+// This is the exact sequence described when the feature was requested: two
+// opposite roads take turns being "in control" of the shared straight-ahead
+// flow, with only a brief dedicated window for each side's right-turners,
+// so through-traffic in either direction is red for at most one step out of
+// four instead of stopping at every phase change - the pairing is what
+// "reduces congestion", per the request.
+//
+// Each of the 4 lamps in a pair turns out to have a single, clean (redStart,
+// redDuration) description within one pair-cycle (cycleLen = 4*stepSec):
+// both "through" lamps are green for 3 steps/red for 1 (they only stop for
+// the one step where the OTHER side is fully active), both "right" lamps
+// are green for exactly their own 1 step/red for the other 3. Yellow is
+// just the last yellowSec of whatever green window a lamp currently has,
+// same idea as the plain scheme's per-phase yellow.
+
+// t/redStart/redDur/cycleLen in seconds, all relative to one pair's own
+// cycle (not the master intersection clock - see getPairedIntersectionState
+// for how a pair's local clock is derived from the real Sim clock).
+function pairedMovementState(redStart, redDur, yellowSec, cycleLen, t) {
+  if (cycleLen <= 0) return { color: "red", remainingSec: 0 };
+  t = ((t % cycleLen) + cycleLen) % cycleLen;
+  const intoRed = ((t - redStart) % cycleLen + cycleLen) % cycleLen;
+  if (intoRed < redDur) return { color: "red", remainingSec: redDur - intoRed };
+  const greenDur = cycleLen - redDur;
+  const remGreen = greenDur - (intoRed - redDur);
+  if (remGreen <= yellowSec) return { color: "yellow", remainingSec: remGreen };
+  return { color: "green", remainingSec: remGreen - yellowSec };
+}
+
+function pairedPairCycleLen(pair) {
+  return 4 * Math.max(1, (pair && pair.stepSec) || PAIRED_DEFAULT_STEP_SEC);
+}
+
+function pairedMasterCycleLen(signal) {
+  const paired = signal && signal.paired;
+  if (!paired || !paired.pairs || paired.pairs.length !== 2) return 0;
+  const allRed = Math.max(0, signal.allRedSec || 0);
+  return pairedPairCycleLen(paired.pairs[0]) + allRed + pairedPairCycleLen(paired.pairs[1]) + allRed;
+}
+
+// Where the master (whole-intersection) clock currently sits: which pair (if
+// either) is active right now and how far into ITS OWN cycle we are, plus
+// enough raw positional info (tMaster/master/starts) to compute a "how long
+// until it's your turn" wait for the inactive pair.
+function getPairedIntersectionState(signal, clockSec) {
+  const paired = signal.paired;
+  const allRed = Math.max(0, signal.allRedSec || 0);
+  const cyc0 = pairedPairCycleLen(paired.pairs[0]);
+  const cyc1 = pairedPairCycleLen(paired.pairs[1]);
+  const master = cyc0 + allRed + cyc1 + allRed;
+  const starts = [0, cyc0 + allRed];
+  if (master <= 0) return { activePairIndex: -1, localT: 0, tMaster: 0, master: 0, starts, cycLens: [cyc0, cyc1] };
+  const tMaster = ((clockSec % master) + master) % master;
+  let activePairIndex = -1, localT = 0;
+  if (tMaster < cyc0) { activePairIndex = 0; localT = tMaster; }
+  else if (tMaster < cyc0 + allRed) { activePairIndex = -1; }
+  else if (tMaster < cyc0 + allRed + cyc1) { activePairIndex = 1; localT = tMaster - (cyc0 + allRed); }
+  return { activePairIndex, localT, tMaster, master, starts, cycLens: [cyc0, cyc1] };
+}
+
+// The paired scheme's equivalent of getApproachCountdown - color+countdown
+// for ONE lamp (wayId + movement), given the node's own (possibly
+// group-turn-local) clock.
+function getPairedMovementCountdown(signal, clockSec, wayId, movement) {
+  const paired = signal.paired;
+  if (!paired || !paired.pairs || paired.pairs.length !== 2) return { color: "red", remainingSec: 0 };
+  const pairIdx = paired.pairs.findIndex((p) => p.wayIds.includes(wayId));
+  if (pairIdx === -1) return { color: "red", remainingSec: 0 };
+
+  const info = getPairedIntersectionState(signal, clockSec);
+  if (info.activePairIndex !== pairIdx) {
+    let wait = info.starts[pairIdx] - info.tMaster;
+    if (wait <= 0) wait += info.master;
+    return { color: "red", remainingSec: wait };
+  }
+
+  const pair = paired.pairs[pairIdx];
+  const stepSec = Math.max(1, pair.stepSec || PAIRED_DEFAULT_STEP_SEC);
+  const cycleLen = 4 * stepSec;
+  const yellowSec = Math.max(0, paired.yellowSec != null ? paired.yellowSec : 3);
+  const isA = wayId === pair.wayIds[0]; // pair.wayIds[1] otherwise - findIndex above guarantees one or the other
+
+  let redStart, redDur;
+  if (movement === "right") {
+    redStart = isA ? stepSec : 3 * stepSec;
+    redDur = 3 * stepSec;
+  } else {
+    redStart = isA ? 2 * stepSec : 0;
+    redDur = stepSec;
+  }
+  return pairedMovementState(redStart, redDur, yellowSec, cycleLen, info.localT);
+}
+
+/* ---------------- Per-node dispatch ---------------- */
+
+// Group-aware per-lamp color + countdown: if this node is in a group and it
+// isn't currently its turn, every approach is red until the turn arrives;
+// otherwise defers to the node's own scheme (plain phase list or paired
+// 4-way), restarted at the top for each turn (via a clock local to that
+// turn) so a turn always begins at the same point rather than wherever the
+// raw clock happens to land. `movement` ("through"/"right") only matters
+// for the paired scheme - the plain scheme has one colour per approach, so
+// it's simply ignored there (both of an approach's lamps end up identical,
+// same as before this project had two lamps per approach at all).
+function getRedlightCountdown(node, nodeId, clockSec, wayId, movement) {
   const signal = node && node.signal;
   if (!signal) return { color: "red", remainingSec: 0 };
   // An external override (see the "External control" section below) beats
   // every other rule at this node - no phase/group logic runs at all while
-  // one is active, it's a hard forced state.
+  // one is active, it's a hard forced state. greenLamps lists exactly which
+  // (wayId, movement) pairs are forced green; everything else at this node
+  // is forced red.
   const override = State.externalOverrides.get(nodeId);
   if (override) {
-    return { color: (override.wayId && override.wayId === wayId) ? "green" : "red", remainingSec: 0, overridden: true };
+    const forced = (override.greenLamps || []).some((g) => g.wayId === wayId && g.movement === movement);
+    return { color: forced ? "green" : "red", remainingSec: 0, overridden: true };
   }
   if (signal.groupId) {
     const info = getGroupTurnInfo(signal.groupId, clockSec);
@@ -376,9 +562,10 @@ function getRedlightCountdown(node, nodeId, clockSec, wayId) {
       if (info.activeNodeId !== nodeId) {
         return { color: "red", remainingSec: nodeGroupWaitSec(signal.groupId, nodeId, clockSec) };
       }
-      return getApproachCountdown(signal, info.localClock, wayId);
+      clockSec = info.localClock; // this node's turn - use the clock local to it, same as before
     }
   }
+  if (signal.scheme === "paired4way") return getPairedMovementCountdown(signal, clockSec, wayId, movement);
   return getApproachCountdown(signal, clockSec, wayId);
 }
 
@@ -571,10 +758,11 @@ function getNodeSignalClock(node, nodeId) {
   return rec.frozenAt != null ? rec.frozenAt : Sim.clockSec - rec.offset;
 }
 
-// serverOverrides: {nodeId: {wayId, controller, since}} - the server's
-// current registry (GET /api/signal/overrides in serve.py). Diffs it against
-// State.externalOverrides and freezes/unfreezes each affected node's clock
-// accordingly. This is the ONLY place overrides ever get applied to State.
+// serverOverrides: {nodeId: {greenLamps: [{wayId,movement}, ...], controller,
+// since}} - the server's current registry (GET /api/signal/overrides in
+// serve.py). Diffs it against State.externalOverrides and freezes/unfreezes
+// each affected node's clock accordingly. This is the ONLY place overrides
+// ever get applied to State.
 function applyOverrideSnapshot(serverOverrides) {
   const incoming = serverOverrides || {};
   let changed = false;
@@ -594,7 +782,11 @@ function applyOverrideSnapshot(serverOverrides) {
       freezeNodeClock(node, nodeId);
       changed = true;
     }
-    State.externalOverrides.set(nodeId, { wayId: ov.wayId || null, controller: ov.controller || "unknown", since: ov.since || null });
+    State.externalOverrides.set(nodeId, {
+      greenLamps: Array.isArray(ov.greenLamps) ? ov.greenLamps : [],
+      controller: ov.controller || "unknown",
+      since: ov.since || null,
+    });
   }
 
   if (changed) {
@@ -648,15 +840,45 @@ async function releaseSignalOverride(nodeId, token, force) {
 }
 
 // nodeId -> token, so the in-browser "Test override" button only ever
-// releases holds it took itself, never someone else's (a real script's).
+// releases (or changes the approach of) holds it took itself, never someone
+// else's (a real script's, or another browser tab's).
 const _manualOverrideTokens = new Map();
 
-async function requestSignalOverride(nodeId, wayId, controller) {
+function isManualOverrideOwner(nodeId) {
+  return _manualOverrideTokens.has(nodeId);
+}
+
+// Convenience: "both lamps of this approach" as a greenLamps list - the
+// old single-wayId override's exact effect, for callers that just want a
+// whole approach green rather than picking specific movements.
+function bothMovementsFor(wayId) {
+  return [{ wayId, movement: "through" }, { wayId, movement: "right" }];
+}
+
+// Takes control of a node, forcing exactly the (wayId, movement) lamps in
+// `greenLamps` green and every other lamp at that node red - pass an empty
+// array (or null/undefined) to force the whole intersection all-red. This
+// is the general primitive behind "take control of any one of the 8 lamps,
+// or any combination of them (a whole phase)": a single lamp is a one-entry
+// list, a whole approach is bothMovementsFor(wayId), an arbitrary phase is
+// whatever combination the caller wants.
+//
+// Also how an already-held override CHANGES its forced lamps: calling this
+// again for a nodeId this page already holds automatically resends its own
+// token, which serve.py treats as an update to the existing hold (same
+// token = allowed, no 409) rather than a brand new one - see the "since"
+// comment in serve.py's /api/signal/override handler. Pass force:true to
+// steal a hold from a DIFFERENT controller instead of erroring with 409.
+async function requestSignalOverride(nodeId, greenLamps, controller, force) {
   try {
     const res = await fetch("/api/signal/override", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nodeId, wayId: wayId || null, controller: controller || "manual-test-ui" }),
+      body: JSON.stringify({
+        nodeId, greenLamps: greenLamps && greenLamps.length ? greenLamps : [],
+        controller: controller || "manual-test-ui",
+        token: _manualOverrideTokens.get(nodeId) || null, force: !!force,
+      }),
     });
     const data = await res.json();
     if (!data.ok) { toast(data.error || "Could not take control"); return null; }
@@ -678,6 +900,18 @@ async function releaseManualOverride(nodeId) {
   _manualOverrideTokens.delete(nodeId);
 }
 
+// Human-readable summary of a greenLamps list for tooltips/banners - e.g.
+// "w123 (through+right), w456 (through)" or "ALL RED (every lamp forced red)".
+function describeGreenLamps(greenLamps) {
+  if (!greenLamps || !greenLamps.length) return "ALL RED (every lamp forced red)";
+  const byWay = new Map();
+  for (const g of greenLamps) {
+    if (!byWay.has(g.wayId)) byWay.set(g.wayId, []);
+    byWay.get(g.wayId).push(g.movement);
+  }
+  return Array.from(byWay.entries()).map(([wayId, movements]) => `${wayId} (${movements.join("+")})`).join(", ");
+}
+
 function updateExternalControlStatus() {
   const countEl = $("#extControlCount");
   const listEl = $("#extControlList");
@@ -689,7 +923,7 @@ function updateExternalControlStatus() {
   listEl.innerHTML = "";
   for (const [nodeId, ov] of entries) {
     listEl.append(el("div", { class: "ext-ctrl-row" },
-      el("span", { class: "ext-ctrl-node", title: `Forcing ${ov.wayId || "ALL approaches"} ${ov.wayId ? "green" : "red"}` }, nodeId),
+      el("span", { class: "ext-ctrl-node", title: `Forcing: ${describeGreenLamps(ov.greenLamps)}` }, nodeId),
       el("span", { class: "ext-ctrl-by" }, ov.controller),
       el("button", {
         title: "Force-release this intersection's external control",
@@ -709,12 +943,18 @@ function drawRedlights() {
   // toward a speck rather than letting them balloon and cover the map.
   for (const [nodeId, node] of State.nodes) {
     if (!node.signal) continue;
-    // An approach not referenced by any phase is deliberately left
-    // unlit/open (no lamp at all) rather than shown as permanently red -
-    // this is what lets a directional light on one side of a two-way road
-    // (see addDirectionalRedlightOnWay) leave the other side unlit.
+    // An approach not referenced anywhere in the active scheme is
+    // deliberately left unlit/open (no lamp at all) rather than shown as
+    // permanently red - this is what lets a directional light on one side
+    // of a two-way road (see addDirectionalRedlightOnWay) leave the other
+    // side unlit. The paired scheme keeps its wayIds in signal.paired
+    // instead of signal.phases (which stays empty for it - see addRedlight).
     const litWayIds = new Set();
-    for (const p of node.signal.phases) for (const wid of p.wayIds) litWayIds.add(wid);
+    if (node.signal.scheme === "paired4way" && node.signal.paired) {
+      for (const p of node.signal.paired.pairs) for (const wid of p.wayIds) litWayIds.add(wid);
+    } else {
+      for (const p of node.signal.phases || []) for (const wid of p.wayIds) litWayIds.add(wid);
+    }
     // The node's OWN effective clock - live, or pinned at its freeze point
     // while under external control (see getNodeSignalClock) - never the raw
     // Sim.clockSec directly, so a frozen intersection's lamps truly stop
@@ -724,12 +964,17 @@ function drawRedlights() {
     const overridden = State.externalOverrides.has(nodeId);
     for (const a of approachableWaysSorted(nodeId)) {
       if (!litWayIds.has(a.wayId)) continue;
-      const cd = getRedlightCountdown(node, nodeId, nodeClock, a.wayId);
-      // The stop line acts like a wall: present while this approach is
-      // stopped (red/yellow), gone the instant it turns green - rather than
-      // a fixed marking regardless of colour.
-      if (cd.color !== "green") drawStopLine(node, nodeId, a);
-      drawLampGlyph(node, a, cd.color, cd.remainingSec, overridden);
+      // Each lamp head gets its OWN countdown query now - for the paired
+      // scheme these genuinely differ (see getPairedMovementCountdown); for
+      // the plain phase-list scheme they still always come back identical
+      // (movement is ignored there), so nothing changes visually for those.
+      const cdThrough = getRedlightCountdown(node, nodeId, nodeClock, a.wayId, "through");
+      const cdRight = getRedlightCountdown(node, nodeId, nodeClock, a.wayId, "right");
+      // The stop line acts like a wall: present unless BOTH movements are
+      // clear to go, gone only once neither has any reason to stop there.
+      if (cdThrough.color !== "green" || cdRight.color !== "green") drawStopLine(node, nodeId, a);
+      drawLampGlyph(node, a, cdThrough.color, cdThrough.remainingSec, overridden, "through");
+      drawLampGlyph(node, a, cdRight.color, cdRight.remainingSec, overridden, "right");
     }
     if (overridden) drawExternalControlBadge(node);
   }
@@ -868,7 +1113,19 @@ const LAMP_MAX_RADIUS_PX = 12;
 const LAMP_FORWARD_OFFSET_M = 5;   // extra stand-off beyond the stop line, along the road
 const LAMP_LATERAL_MARGIN_M = 0.8; // extra margin beyond the kerb edge (two-way roads only)
 
-function drawLampGlyph(node, approach, color, remainingSec, overridden) {
+// Every lit approach gets TWO lamp heads side by side - one for going
+// straight through, one for turning right (the two movements that actually
+// conflict with cross-traffic; a free/uncontrolled left is assumed, same as
+// most real fixed-time signals here) - each offset this many metres either
+// side of the approach's single-lamp anchor point along the axis
+// perpendicular to travel, same fixed-real-world-distance convention as
+// every other offset in this function (see the big comment above). Both
+// heads currently always show the SAME colour/countdown, since the phase
+// data model has one state per approach, not per movement - the split here
+// is deliberately presentation-only for now (see drawMovementArrow).
+const LAMP_MOVEMENT_SPACING_M = 3.2;
+
+function drawLampGlyph(node, approach, color, remainingSec, overridden, movement) {
   const liveScale = State.view.scale;
   const mult = Config.signalLampSizeMultiplier || 1;
   // sizingScale drives how big the glyph renders (in px) - it has no bearing
@@ -905,8 +1162,22 @@ function drawLampGlyph(node, approach, color, remainingSec, overridden) {
   // signal lives on one primary member, but the lamp for each approach must
   // still stand at ITS OWN real road, not the primary's point.
   const home = State.nodes.get(approach.homeNodeId) || node;
-  const wx = home.x + approach.dirX * forwardOffsetWorld + leftX * lateralOffsetWorld;
-  const wy = home.y + approach.dirY * forwardOffsetWorld + leftY * lateralOffsetWorld;
+  let wx = home.x + approach.dirX * forwardOffsetWorld + leftX * lateralOffsetWorld;
+  let wy = home.y + approach.dirY * forwardOffsetWorld + leftY * lateralOffsetWorld;
+
+  // Split the through/right heads apart along the axis perpendicular to
+  // travel - always available (unlike leftX/leftY above, which stays 0 on a
+  // one-way road), since the two heads need to sit side by side regardless
+  // of whether this approach also has a verge offset. "Through" sits toward
+  // the near/left side (the existing single-lamp anchor's side of the lane);
+  // "right" sits toward the road's centre, roughly matching where a real
+  // right-turn signal head would stand since that movement crosses into the
+  // opposing lanes.
+  const perpX = approach.dirY, perpY = -approach.dirX;
+  const movementSide = movement === "right" ? -1 : 1;
+  wx += perpX * LAMP_MOVEMENT_SPACING_M * movementSide;
+  wy += perpY * LAMP_MOVEMENT_SPACING_M * movementSide;
+
   const sp = worldToScreen(wx, wy);
   if (sp.x < -20 || sp.x > cssW() + 20 || sp.y < -20 || sp.y > cssH() + 20) return;
   ctx.save();
@@ -927,6 +1198,12 @@ function drawLampGlyph(node, approach, color, remainingSec, overridden) {
   ctx.fill();
   ctx.restore();
 
+  // The movement arrow, drawn on top of the coloured fill - see
+  // drawMovementArrow for how it's oriented to the approach's actual
+  // direction of travel (and the live map rotation) rather than a fixed
+  // screen direction.
+  drawMovementArrow(sp, radius, approach, movement);
+
   // Dashed violet ring around this one lamp when it's a forced state from an
   // external override, distinct from the whole-intersection pulsing badge
   // drawExternalControlBadge draws (that one's visible from further away;
@@ -942,7 +1219,11 @@ function drawLampGlyph(node, approach, color, remainingSec, overridden) {
     ctx.restore();
   }
 
-  // Countdown label (or "CTRL" while a remainingSec-less forced state is in effect)
+  // Countdown label (or "CTRL" while a remainingSec-less forced state is in
+  // effect) - drawn under each head independently. The paired scheme's two
+  // heads genuinely differ (see getPairedMovementCountdown), so both are
+  // worth showing; LAMP_MOVEMENT_SPACING_M keeps them far enough apart that
+  // two 2-digit numbers don't visually run together into one 4-digit one.
   if (Config.showSignalTimers && radius >= LAMP_MAX_RADIUS_PX * mult * 0.5) {
     ctx.save();
     ctx.font = `bold ${Math.round(Math.min(13, Math.max(9, radius + 2)))}px 'Space Grotesk', sans-serif`;
@@ -957,6 +1238,76 @@ function drawLampGlyph(node, approach, color, remainingSec, overridden) {
     ctx.fillText(label, sp.x, ty);
     ctx.restore();
   }
+}
+
+// Single-polygon vertex lists for each movement's icon, in a canonical LOCAL
+// space where "forward" (the direction of travel) is -Y and s is the icon's
+// overall scale - a fat arrow-up shape for "through", the same shaft bent
+// into a right-angle hook with an arrowhead for "right". One closed,
+// non-self-intersecting outline each (not a stroked shaft + a separately
+// filled arrowhead) is what keeps this crisp at tiny sizes: a single
+// fill+stroke pass has no seams or double-thickness spots where separate
+// shapes would otherwise overlap.
+function movementArrowPoints(movement, s) {
+  if (movement === "right") {
+    const bendY = -0.05 * s;
+    return [
+      [-0.18 * s, 0.80 * s],          // shaft bottom-left
+      [-0.18 * s, bendY - 0.36 * s],  // up the left edge to the arm's top-left
+      [0.42 * s, bendY - 0.36 * s],   // across the arm's top edge
+      [0.75 * s, bendY - 0.18 * s],   // arrowhead tip
+      [0.42 * s, bendY],              // arrowhead base / arm's bottom-right
+      [0.18 * s, bendY],              // inner corner, back to the shaft's right edge
+      [0.18 * s, 0.80 * s],           // down the shaft's right edge
+    ];
+  }
+  return [
+    [0, -0.95 * s],           // tip
+    [0.45 * s, -0.15 * s],    // right shoulder
+    [0.18 * s, -0.15 * s],    // right shaft top
+    [0.18 * s, 0.80 * s],     // right shaft bottom
+    [-0.18 * s, 0.80 * s],    // left shaft bottom
+    [-0.18 * s, -0.15 * s],   // left shaft top
+    [-0.45 * s, -0.15 * s],   // left shoulder
+  ];
+}
+
+// The little icon that says which movement a lamp head governs, drawn on
+// top of the lamp's coloured fill. Built in the canonical local space above,
+// then rotated so "forward" lines up with this approach's actual direction
+// of travel AS DRAWN ON SCREEN (i.e. after accounting for the live map
+// rotation), never a fixed on-screen direction. `approach.dirX/dirY` point
+// FROM the junction node OUT to the neighbour (see connectedWaysSorted) -
+// the direction a vehicle actually travels, arriving at the signal, is the
+// opposite of that.
+function drawMovementArrow(sp, radius, approach, movement) {
+  const c = Math.cos(State.view.rotation), s = Math.sin(State.view.rotation);
+  const travelDx = -approach.dirX, travelDy = -approach.dirY;
+  const rx = travelDx * c - travelDy * s;
+  const ry = travelDx * s + travelDy * c;
+  const screenAngle = Math.atan2(-ry, rx); // see worldToScreen's own rx/ry - screen Y is flipped relative to world Y
+
+  const scale = radius * 0.58; // fits inside the inner coloured circle (radius*0.6)
+  if (scale < 2.5) return; // too small to read as anything but noise - skip rather than smudge
+
+  const pts = movementArrowPoints(movement, scale);
+  ctx.save();
+  ctx.translate(sp.x, sp.y);
+  ctx.rotate(screenAngle + Math.PI / 2);
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  // A thin dark outline (stroked on the same path, so it frames the shape
+  // rather than sitting as a second overlapping shape) keeps the white fill
+  // legible against green/yellow/red alike.
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(1, radius * 0.12);
+  ctx.strokeStyle = "#1a1a2e";
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.restore();
 }
 
 /* ---------------- Inspector: single intersection ---------------- */
@@ -1030,8 +1381,79 @@ function renderRedlightSection(node, nodeId) {
     if (!Number.isFinite(v) || v < 0) { allRedInput.value = signal.allRedSec; return; }
     pushUndo(); signal.allRedSec = v; markDirty(); scheduleAutosave(); renderInspector();
   });
-  wrap.append(el("div", { class: "field" }, el("label", {}, "All-red clearance (s)"), allRedInput));
+  wrap.append(el("div", { class: "field" },
+    el("label", {}, signal.scheme === "paired4way" ? "All-red clearance between pairs (s)" : "All-red clearance (s)"),
+    allRedInput));
 
+  if (signal.scheme === "paired4way" && signal.paired) {
+    wrap.append(renderPairedScheduleSection(signal, nodeId));
+  } else {
+    wrap.append(renderPhaseListSection(signal, nodeId, approaches));
+  }
+
+  wrap.append(el("div", { class: "field" }, el("label", {}, "Cycle length"), el("div", { class: "readonly" }, `${redlightCycleLength(signal)} s`)));
+
+  wrap.append(el("button", {
+    class: "danger-btn",
+    onclick: () => { pushUndo(); removeRedlight(nodeId); markDirty(); scheduleAutosave(); renderInspector(); },
+  }, "Remove traffic light"));
+
+  return wrap;
+}
+
+// The paired-4-way scheme's own editor: one box per pair with its step
+// duration (see pairedMovementState for what a "step" means), a shared
+// yellow duration, and an escape hatch back to plain manual phases.
+function renderPairedScheduleSection(signal, nodeId) {
+  const wrap = el("div", {});
+
+  const yellowInput = el("input", { type: "number", min: "0", value: signal.paired.yellowSec != null ? signal.paired.yellowSec : 3 });
+  yellowInput.addEventListener("change", () => {
+    const v = parseFloat(yellowInput.value);
+    if (!Number.isFinite(v) || v < 0) { yellowInput.value = signal.paired.yellowSec; return; }
+    pushUndo(); signal.paired.yellowSec = v; markDirty(); scheduleAutosave();
+  });
+  wrap.append(el("div", { class: "field" }, el("label", {}, "Yellow (s, every lamp)"), yellowInput));
+
+  signal.paired.pairs.forEach((pair, pi) => {
+    const box = el("div", { class: "phase-box" });
+    box.append(el("div", { class: "phase-title" }, `Pair ${pi + 1}: ${pair.wayIds[0]} ↔ ${pair.wayIds[1]}`));
+
+    const stepInput = el("input", { type: "number", min: "1", value: pair.stepSec });
+    stepInput.addEventListener("change", () => {
+      const v = parseFloat(stepInput.value);
+      if (!Number.isFinite(v) || v < 1) { stepInput.value = pair.stepSec; return; }
+      pushUndo(); pair.stepSec = v; markDirty(); scheduleAutosave(); renderInspector();
+    });
+    const stepSec = Math.max(1, pair.stepSec || PAIRED_DEFAULT_STEP_SEC);
+    box.append(
+      el("div", { class: "field" }, el("label", {}, "Step duration (s)"), stepInput),
+      el("div", { class: "readonly" },
+        `${pair.wayIds[0]} straight+right → both straight → ${pair.wayIds[1]} straight+right → both straight → repeats (${4 * stepSec}s per pair cycle)`),
+    );
+    wrap.append(box);
+  });
+
+  wrap.append(el("div", { class: "readonly" },
+    "Two opposite pairs take turns (see the all-red clearance above); within a pair, straight-through traffic runs almost continuously while each side gets one brief dedicated right-turn step - watch the intersection for the live choreography."));
+
+  wrap.append(el("button", {
+    onclick: () => {
+      pushUndo();
+      convertToPhaseScheme(nodeId);
+      markDirty(); scheduleAutosave(); renderInspector();
+    },
+  }, "Switch to manual phases"));
+
+  return wrap;
+}
+
+// The original plain phase-list editor - unchanged behaviour, just factored
+// out of renderRedlightSection so it can sit alongside the paired scheme's
+// own editor above. Still used for every non-4-way signal, and for a 4-way
+// one the user has explicitly switched back to manual phases.
+function renderPhaseListSection(signal, nodeId, approaches) {
+  const wrap = el("div", {});
   const phaseList = el("div", {});
   wrap.append(phaseList);
 
@@ -1091,12 +1513,18 @@ function renderRedlightSection(node, nodeId) {
     },
   }, "+ Add phase"));
 
-  wrap.append(el("div", { class: "field" }, el("label", {}, "Cycle length"), el("div", { class: "readonly" }, `${redlightCycleLength(signal)} s`)));
-
-  wrap.append(el("button", {
-    class: "danger-btn",
-    onclick: () => { pushUndo(); removeRedlight(nodeId); markDirty(); scheduleAutosave(); renderInspector(); },
-  }, "Remove traffic light"));
+  // Only offered for a genuinely 4-way node - the paired scheme depends on
+  // there being exactly two opposite pairs (see the "only valid for 4-way"
+  // note on addRedlight).
+  if (approaches.length === 4) {
+    wrap.append(el("button", {
+      onclick: () => {
+        pushUndo();
+        convertToPairedScheme(nodeId);
+        markDirty(); scheduleAutosave(); renderInspector();
+      },
+    }, "Switch to paired 4-way scheme"));
+  }
 
   return wrap;
 }
