@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Map Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <button id="sidebarToggle" title="Toggle sidebar">☰</button>
+    <div class="brand">Traffic&nbsp;Map&nbsp;Editor</div>
+
+    <div class="topbar-group">
+      <button id="zoomOutBtn" title="Zoom out">−</button>
+      <span id="zoomReadout">100%</span>
+      <button id="zoomInBtn" title="Zoom in">+</button>
+      <button id="fitBtn" title="Fit whole map in view">Fit</button>
+    </div>
+
+    <div class="topbar-group">
+      <span class="rotate-icon" title="Rotate map">⟳</span>
+      <input type="range" id="rotationSlider" min="-180" max="180" step="1" value="0" title="Rotate the map view">
+      <span id="rotationReadout">0°</span>
+      <button id="rotationResetBtn" title="Reset rotation to 0°">Reset</button>
+    </div>
+
+    <div class="topbar-group">
+      <button id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="redoBtn" title="Redo (Ctrl+Y)">Redo</button>
+    </div>
+
+    <div class="topbar-group topbar-right">
+      <a class="tool-btn" href="simulation.html" title="Open the read-only simulation viewer">🎬 Simulation</a>
+      <button id="saveBtn" title="Save the current map back into map_data.json on disk">💾 Save</button>
+      <button id="loadBtn" title="Load a previously saved map JSON">📂 Load</button>
+      <button id="resetBtn" title="Reload the original converted OSM data">🔄 Reset</button>
+      <button id="closeServerBtn" title="Shut down the local serve.py server">⏻ Close</button>
+      <input type="file" id="fileInput" accept="application/json" hidden>
+    </div>
+  </header>
+
+  <div id="main-area">
+
+    <aside id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Tools</div>
+        <button class="tool-btn active" data-tool="pan" title="Pan / Zoom (drag to pan, wheel to zoom)">🖐 Pan</button>
+        <button class="tool-btn" data-tool="select" title="Select, move nodes/roads, rotate roads. Shift-click or drag a box to select multiple.">🔍 Select / Move</button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Add</div>
+        <div class="dropdown" id="addDropdown">
+          <button class="tool-btn" id="addMenuBtn" title="Add an intersection or road" type="button">➕ Add ▾</button>
+          <div class="dropdown-menu" id="addMenu" hidden>
+            <button class="tool-btn" data-tool="addNode" title="Click empty space to add an intersection">⊕ Intersection</button>
+            <button class="tool-btn" data-tool="addRoadLine" title="Click points to draw a straight road, Enter/double-click to finish">━ Road (Straight)</button>
+            <button class="tool-btn" data-tool="addRoadSpline" title="Click points to draw a curved road, Enter/double-click to finish">〰 Road (Spline)</button>
+            <button class="tool-btn" data-tool="addRoadCircle" title="Click and drag from the centre out to set the radius">⭕ Road (Circle)</button>
+            <button class="tool-btn" data-tool="addSignal" title="Click an intersection to add a traffic light">🚦 Traffic Light</button>
+            <button class="tool-btn" data-tool="addUturn" title="Click a road (splits it there) or an existing 2-road intersection to mark a U-turn point">↩ U-turn</button>
+            <button class="tool-btn" data-tool="addAnglePoint" title="Click a road to insert a draggable sharp-bend point, without splitting it into two roads">⌐ Angle Point</button>
+            <button class="tool-btn" data-tool="addCurvePoint" title="Click a road to insert a draggable smooth-curve point, without splitting it into two roads">◠ Curve Point</button>
+            <button class="tool-btn" data-tool="addBuilding" title="Click points to draw a building footprint, Enter/double-click to finish">🏢 Building</button>
+            <button class="tool-btn" data-tool="addAmenity" title="Click to place a point amenity, then set its type/icon/fleet in the inspector">📍 Amenity</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Remove</div>
+        <button class="tool-btn" data-tool="delNode" title="Click a node to delete it">✕ Intersection</button>
+        <button class="tool-btn" data-tool="delWay" title="Click a road to delete it">✕ Road</button>
+        <button class="tool-btn" data-tool="delBuilding" title="Click a building to delete it">✕ Building</button>
+        <button class="tool-btn" data-tool="delAmenity" title="Click an amenity to delete it">✕ Amenity</button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Simulation</div>
+        <button id="simPlayBtn" title="Play/pause the fixed-time traffic-light simulation">▶ Play</button>
+        <button id="simResetBtn" title="Reset the simulation clock to 0">↺ Sim Reset</button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Routing</div>
+        <button id="recalcChBtn" title="Rebuild the routing Contraction Hierarchy (map_data.ch.bin) from the current map_data.json on disk">🛣 Recalculate CH</button>
+      </div>
+
+      <div class="sidebar-section" id="selectionFiltersSection">
+        <div class="sidebar-section-title">Selection Filters</div>
+        <div id="selectionFiltersContainer" style="display: flex; flex-direction: column; gap: 4px; max-height: 250px; overflow-y: auto; padding-right: 4px;">
+          <!-- Checkboxes generated dynamically in editor.js -->
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">View</div>
+        <button id="arrowsToggleBtn" title="Show/hide one-way direction arrows">↗ Arrows</button>
+        <button id="timersToggleBtn" title="Show/hide traffic-light countdown timers">⏱ Timers</button>
+        <button id="buildingsToggleBtn" title="Show/hide buildings">🏢 Buildings</button>
+        <button id="amenitiesToggleBtn" title="Show/hide amenities">📍 Amenities</button>
+        <button id="cleanBtn" title="Remove unused, untagged points">🧹 Clean up</button>
+        <button id="settingsBtn" title="Editor settings and defaults">⚙ Settings</button>
+      </div>
+    </aside>
+
+    <main id="workspace">
+      <canvas id="mapCanvas"></canvas>
+
+      <div id="hint">Pan tool: drag to pan, scroll to zoom.</div>
+
+      <div id="restoreBanner" hidden>
+        <span id="restoreText"></span>
+        <button id="restoreYes">Restore</button>
+        <button id="restoreNo">Discard</button>
+      </div>
+
+      <div id="toast" hidden></div>
+
+      <aside id="inspector" hidden>
+        <div class="insp-head">
+          <span id="inspTitle">Selection</span>
+          <button id="inspClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="inspBody"></div>
+      </aside>
+
+      <aside id="settingsPanel" hidden>
+        <div class="insp-head">
+          <span>Settings</span>
+          <button id="settingsClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="settingsBody"></div>
+      </aside>
+    </main>
+
+  </div>
+
+  <footer id="statusbar">
+    <span id="statTool">Tool: Pan</span>
+    <span id="statCoords">lat --, lon --</span>
+    <span id="statCounts">-- nodes, -- roads</span>
+    <span id="statSelection"></span>
+  </footer>
+
+</div>
+
+<script src="map-core.js"></script>
+<script src="settings.js"></script>
+<script src="redlight.js"></script>
+<script src="editor.js"></script>
+<!-- TEMP: routing test/visualization harness - delete this line + routetest.js to remove -->
+<script src="routetest.js"></script>
+</body>
+</html>

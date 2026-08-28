@@ -1,0 +1,693 @@
+/* ============================================================
+   Neo-Brutalism Theme — Traffic Map Editor
+   ============================================================ */
+
+:root{
+  --bg: #f5f0e8;
+  --sidebar-bg: #1a1a2e;
+  --sidebar-fg: #f5f0e8;
+  --topbar-bg: #faf3e0;
+  --accent: #4361ee;
+  --accent-hover: #3a56d4;
+  --accent-light: #e8edff;
+  --panel-bg: #ffffff;
+  --panel-border: #e0d8cc;
+  --text: #1a1a2e;
+  --muted: #6c6478;
+  --danger: #ef476f;
+  --success: #06d6a0;
+  --warning: #ffd166;
+  --border: #1a1a2e;
+  --shadow: #1a1a2e;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --font: 'Space Grotesk', 'Segoe UI', system-ui, -apple-system, Arial, sans-serif;
+}
+
+*{ box-sizing: border-box; }
+[hidden]{ display:none !important; }
+
+html,body{ height:100%; margin:0; }
+body{
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+#app{ display:flex; flex-direction:column; height:100vh; }
+
+/* ============================================================
+   TOP BAR
+   ============================================================ */
+#topbar{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--topbar-bg);
+  border-bottom: 3px solid var(--border);
+  z-index: 10;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+#topbar .brand{
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.3px;
+  color: var(--accent);
+  padding-right: 12px;
+  border-right: 3px solid var(--border);
+  margin-right: 2px;
+}
+
+#sidebarToggle{
+  background: var(--accent);
+  color: #fff;
+  border: 3px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--shadow);
+  transition: transform 0.1s, box-shadow 0.1s;
+  line-height: 1.3;
+}
+#sidebarToggle:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+#sidebarToggle:active{
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--shadow);
+}
+
+.topbar-group{
+  display:flex;
+  align-items:center;
+  gap:4px;
+}
+.topbar-group.topbar-right{ margin-left:auto; }
+
+#topbar button, #topbar a.tool-btn{
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--shadow);
+  transition: transform 0.1s, box-shadow 0.1s;
+  white-space: nowrap;
+}
+#topbar button:hover, #topbar a.tool-btn:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--shadow);
+  background: var(--accent-light);
+}
+#topbar button:active, #topbar a.tool-btn:active{
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--shadow);
+}
+#topbar button:disabled{
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
+#zoomReadout{
+  min-width: 46px;
+  text-align: center;
+  display: inline-block;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+}
+
+/* ============================================================
+   ROTATION CONTROL
+   ============================================================ */
+.rotate-icon{ color: var(--accent); font-size: 16px; padding: 0 2px; font-weight: 700; }
+#rotationSlider{ width: 90px; accent-color: var(--accent); }
+#rotationReadout{
+  min-width: 36px;
+  text-align: center;
+  display: inline-block;
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* ============================================================
+   MAIN AREA (sidebar + workspace)
+   ============================================================ */
+#main-area{
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ============================================================
+   LEFT SIDEBAR
+   ============================================================ */
+#sidebar{
+  width: 220px;
+  min-width: 220px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  border-right: 3px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex-shrink: 0;
+  transition: width 0.25s ease, min-width 0.25s ease, border-right-width 0.25s ease;
+  z-index: 8;
+}
+#sidebar.collapsed{
+  width: 0;
+  min-width: 0;
+  border-right-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-section{
+  padding: 10px 12px;
+  border-bottom: 2px solid rgba(255,255,255,0.06);
+}
+.sidebar-section:last-child{ border-bottom: none; }
+
+.sidebar-section-title{
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: rgba(255,255,255,0.35);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+/* Sidebar buttons (tool-btn and others) */
+#sidebar button{
+  display: block;
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  color: var(--sidebar-fg);
+  border: 2px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font);
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  margin-bottom: 4px;
+  transition: background 0.15s, transform 0.1s, box-shadow 0.1s;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#sidebar button:hover{
+  background: rgba(255,255,255,0.12);
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 rgba(0,0,0,0.25);
+}
+#sidebar button:active{
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 rgba(0,0,0,0.25);
+}
+#sidebar button.tool-btn.active,
+#sidebar button.active{
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: inset 2px 2px 0 rgba(0,0,0,0.15);
+  transform: translate(2px, 2px);
+}
+
+/* Arrows/Timers toggle active state */
+#arrowsToggleBtn.active,
+#timersToggleBtn.active{
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
+}
+
+/* ============================================================
+   SIDEBAR DROPDOWN (Add menu — expands inline)
+   ============================================================ */
+#sidebar .dropdown{ position: relative; }
+#sidebar .dropdown-menu{
+  position: static;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 0 0 14px;
+  min-width: 0;
+  box-shadow: none;
+}
+#sidebar .dropdown-menu .tool-btn{
+  font-size: 12px;
+  padding: 7px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* ============================================================
+   WORKSPACE
+   ============================================================ */
+#workspace{ position:relative; flex:1; min-height:0; min-width:0; background: var(--bg); overflow:hidden; }
+#mapCanvas{ position:absolute; inset:0; width:100%; height:100%; display:block; cursor: grab; }
+#mapCanvas.tool-select{ cursor: default; }
+#mapCanvas.tool-addNode, #mapCanvas.tool-addRoadLine, #mapCanvas.tool-addRoadSpline, #mapCanvas.tool-addSignal{ cursor: crosshair; }
+#mapCanvas.tool-delNode, #mapCanvas.tool-delWay{ cursor: not-allowed; }
+#mapCanvas.dragging{ cursor: grabbing; }
+
+/* ============================================================
+   HINT (floating tip in top-left of workspace)
+   ============================================================ */
+#hint{
+  position:absolute; top:12px; left:12px;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+  padding: 8px 14px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 3px 3px 0 var(--shadow);
+  font-size: 12px;
+  font-weight: 500;
+  pointer-events: none;
+  max-width: 46ch;
+  z-index: 4;
+}
+
+/* ============================================================
+   RESTORE BANNER
+   ============================================================ */
+#restoreBanner{
+  position:absolute; top:12px; left:50%; transform:translateX(-50%);
+  background: var(--panel-bg);
+  border: 3px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display:flex; gap:10px; align-items:center;
+  box-shadow: 4px 4px 0 var(--shadow);
+  font-weight: 500;
+  z-index: 6;
+}
+#restoreBanner button{
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 600;
+  box-shadow: 2px 2px 0 var(--shadow);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+#restoreBanner button:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--shadow);
+}
+#restoreYes{ background: var(--accent); color:#fff; }
+#restoreNo{ background: var(--bg); color: var(--text); }
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+#toast{
+  position:absolute; bottom:18px; left:50%; transform:translateX(-50%);
+  background: var(--sidebar-bg);
+  color:#fff;
+  padding: 9px 18px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 3px 3px 0 var(--shadow);
+  font-size: 13px;
+  font-weight: 600;
+  z-index: 6;
+}
+
+/* ============================================================
+   INSPECTOR & SETTINGS PANELS (right overlays, full height)
+   ============================================================ */
+#inspector{
+  position:absolute; top:0; right:0; bottom:0;
+  width: 340px; min-width: 260px; max-width: 80vw;
+  resize: horizontal;
+  background: var(--panel-bg);
+  border-left: 3px solid var(--border);
+  display:flex; flex-direction:column;
+  overflow:hidden;
+  z-index: 5;
+}
+#inspector[hidden]{ display:none; }
+
+#settingsPanel{
+  position:absolute; top:0; right:0; bottom:0;
+  width: 340px; min-width: 260px; max-width: 80vw;
+  resize: horizontal;
+  background: var(--panel-bg);
+  border-left: 3px solid var(--border);
+  display:flex; flex-direction:column;
+  overflow:hidden;
+  z-index: 5;
+}
+
+/* Panel header */
+.insp-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 12px 14px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  border-bottom: 3px solid var(--border);
+  flex-shrink: 0;
+}
+#inspClose,
+#settingsClose{
+  border: 2px solid rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  padding: 0;
+}
+#inspClose:hover,
+#settingsClose:hover{
+  background: rgba(255,255,255,0.3);
+}
+
+/* Panel body */
+.insp-body{ padding:14px; overflow-y:auto; overflow-x:hidden; flex:1; min-height:0; }
+#settingsPanel .insp-body{ padding:14px; overflow-y:auto; overflow-x:hidden; flex:1; min-height:0; }
+
+/* ============================================================
+   FORM FIELDS (inside panels)
+   ============================================================ */
+.field{ margin-bottom:12px; }
+.field label{
+  display:block; font-size:10px; font-weight:700; color:var(--muted);
+  margin-bottom:4px; text-transform:uppercase; letter-spacing:.06em;
+}
+.field input[type=text], .field input[type=number], .field select{
+  width:100%; padding:7px 10px;
+  border:2px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size:13px; font-family: var(--font); font-weight:500;
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.12);
+  transition: box-shadow 0.15s, border-color 0.15s;
+  background: #fff;
+}
+.field input:focus, .field select:focus{
+  outline:none;
+  border-color: var(--accent);
+  box-shadow: 3px 3px 0 rgba(67,97,238,0.2);
+}
+.field .readonly{ font-size:13px; color:var(--text); font-weight:500; }
+
+.checkrow{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.checkrow label{ font-size:13px; font-weight:500; }
+.checkrow input[type=checkbox]{ width:18px; height:18px; accent-color: var(--accent); cursor:pointer; }
+
+/* ============================================================
+   TAG EDITOR
+   ============================================================ */
+.tag-row{ display:flex; gap:4px; margin-bottom:5px; align-items:center; }
+.tag-row .tag-key{
+  width:38%; font-size:11px; font-weight:600; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.tag-row input{
+  flex:1; padding:5px 8px;
+  border:2px solid var(--border); border-radius: var(--radius-sm);
+  font-size:12px; font-family: var(--font);
+}
+.tag-row button{
+  border:2px solid var(--danger); background:#fff; color:var(--danger);
+  border-radius: var(--radius-sm); width:24px; height:24px; cursor:pointer;
+  font-weight:700; font-size:14px; display:flex; align-items:center; justify-content:center;
+  padding:0; transition: background 0.15s, color 0.15s;
+}
+.tag-row button:hover{ background: var(--danger); color:#fff; }
+
+.tag-add{ display:flex; gap:4px; margin-top:8px; flex-wrap:wrap; }
+.tag-add input, .tag-add select{
+  flex:1; min-width:60px; padding:5px 8px;
+  border:2px solid var(--border); border-radius: var(--radius-sm);
+  font-size:12px; font-family: var(--font);
+}
+.tag-add button{
+  border:2px solid var(--border); background: var(--accent); color:#fff;
+  border-radius: var(--radius-sm); padding:5px 12px; cursor:pointer;
+  font-weight:600; font-family: var(--font); font-size:12px;
+  box-shadow: 2px 2px 0 var(--shadow);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.tag-add button:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--shadow);
+}
+
+/* ============================================================
+   DANGER BUTTONS
+   ============================================================ */
+.danger-btn{
+  width:100%; margin-top:8px; padding:9px;
+  border:2px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--danger); color:#fff; cursor:pointer;
+  font-size:13px; font-family: var(--font); font-weight:600;
+  box-shadow: 3px 3px 0 var(--shadow);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.danger-btn:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+.danger-btn:active{
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--shadow);
+}
+
+/* ============================================================
+   SECTION TITLES IN PANELS
+   ============================================================ */
+.section-title{
+  font-size:10px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.08em; color:var(--muted);
+  margin: 14px 0 8px;
+  border-top: 2px solid var(--panel-border);
+  padding-top: 12px;
+}
+
+/* ============================================================
+   PHASE EDITOR
+   ============================================================ */
+.phase-box{
+  border:2px solid var(--border); border-radius: var(--radius);
+  padding:10px; margin-bottom:10px;
+  background: var(--bg);
+  border-left: 4px solid var(--accent);
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.08);
+}
+.phase-title{
+  font-weight:700; font-size:13px; margin-bottom:8px; color: var(--accent);
+}
+
+/* ============================================================
+   QUICK ACTIONS (bulk selection)
+   ============================================================ */
+.quick-actions{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+.quick-actions button{
+  flex:1 1 auto;
+  border:2px solid var(--border); background: var(--panel-bg);
+  border-radius: var(--radius-sm); padding:7px 10px;
+  font-size:11.5px; font-family: var(--font); font-weight:600; cursor:pointer;
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.12);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.quick-actions button:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 rgba(26,26,46,0.12);
+  background: var(--accent-light);
+}
+
+/* ============================================================
+   BULK FILTER (selection filter by type)
+   ============================================================ */
+.bulk-filter {
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: var(--panel-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bulk-filter .checkrow {
+  margin: 0;
+  padding: 2px 0;
+}
+.bulk-filter .checkrow label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ============================================================
+   RANGE SLIDER (settings)
+   ============================================================ */
+.range-row{ display:flex; align-items:center; gap:8px; }
+.range-row input[type=range]{ flex:1; accent-color: var(--accent); }
+.range-readout{
+  min-width:44px; text-align:right; font-size:12px; font-weight:600;
+  color: var(--text);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+
+/* ============================================================
+   STATUS BAR
+   ============================================================ */
+#statusbar{
+  display:flex; gap:24px; align-items:center;
+  padding: 5px 14px;
+  background: var(--topbar-bg);
+  border-top: 3px solid var(--border);
+  font-size:11px; font-weight:600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   PLAIN ACTION BUTTONS IN PANELS
+   (dynamically created buttons like "Reverse direction",
+    "Add traffic light", "+ Add phase", "Leave group", etc.)
+   ============================================================ */
+.insp-body button{
+  font-family: var(--font);
+  cursor: pointer;
+}
+/* Style unclassed buttons as neo-brutalist action buttons */
+.insp-body > button:not([class]),
+.insp-body > div > button:not([class]) {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.12);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.insp-body > button:not([class]):hover,
+.insp-body > div > button:not([class]):hover {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 rgba(26,26,46,0.12);
+  background: var(--accent-light);
+}
+
+/* ============================================================
+   SCROLLBAR STYLING
+   ============================================================ */
+#sidebar::-webkit-scrollbar,
+.insp-body::-webkit-scrollbar,
+#selectionFiltersContainer::-webkit-scrollbar{ width: 6px; }
+#sidebar::-webkit-scrollbar-track,
+#selectionFiltersContainer::-webkit-scrollbar-track{ background: transparent; }
+#sidebar::-webkit-scrollbar-thumb,
+#selectionFiltersContainer::-webkit-scrollbar-thumb{ background: rgba(255,255,255,0.15); border-radius: 3px; }
+.insp-body::-webkit-scrollbar-track{ background: transparent; }
+.insp-body::-webkit-scrollbar-thumb{ background: rgba(26,26,46,0.15); border-radius: 3px; }
+
+#selectionFiltersContainer .checkrow {
+  margin-bottom: 4px;
+}
+#selectionFiltersContainer .checkrow label {
+  color: var(--sidebar-fg);
+  font-size: 12px;
+}
+#selectionFiltersContainer .checkrow input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+}
+
+/* ============================================================
+   AMENITY ICON + FLEET EDITOR
+   ============================================================ */
+.icon-preview{
+  display:flex; align-items:center; justify-content:center;
+  width:56px; height:56px; margin-bottom:10px;
+  border:2px solid var(--border); border-radius: var(--radius-sm);
+  background:#fff; font-size:30px;
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.12);
+}
+.icon-preview img{ width:100%; height:100%; object-fit:contain; border-radius: var(--radius-sm); }
+
+.fleet-card{
+  margin:10px 0; padding:10px;
+  border:2px solid var(--border); border-radius: var(--radius);
+  background: var(--panel-bg);
+  box-shadow: 3px 3px 0 rgba(26,26,46,0.12);
+}
+.fleet-card .section-title{ margin-top:10px; padding-top:8px; }
+
+.vehicle-row{
+  margin:8px 0; padding:8px;
+  border:2px dashed var(--panel-border); border-radius: var(--radius-sm);
+}
+
+.fleet-card button, .vehicle-row button{
+  display:block; width:100%; margin-top:6px; padding:7px 10px;
+  border:2px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel-bg); color: var(--text);
+  font-size:12px; font-weight:600; font-family: var(--font); cursor:pointer;
+  box-shadow: 2px 2px 0 rgba(26,26,46,0.12);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.fleet-card button:hover, .vehicle-row button:hover{
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 rgba(26,26,46,0.12);
+  background: var(--accent-light);
+}
+.vehicle-row > button:last-child{
+  border-color: var(--danger); color: var(--danger);
+}
+.vehicle-row > button:last-child:hover{
+  background: var(--danger); color:#fff;
+}

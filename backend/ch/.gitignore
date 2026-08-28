@@ -1,0 +1,4 @@
+# Compiled locally by serve.py (via g++) - not source, don't commit.
+*.exe
+*.o
+*.obj

@@ -1,0 +1,10 @@
+# Contraction Hierarchy output - regenerated from map_data.json by the
+# "Recalculate CH" sidebar button (see serve.py / ch/ch_preprocess.cpp),
+# no need to version it.
+map_data.ch.bin
+map_data.ch.meta.json
+__pycache__/
+
+# Amenity icon images uploaded from the editor's Icon section (see
+# serve.py's /api/upload-icon) - local editor state, not source.
+icons/

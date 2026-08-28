@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <button id="sidebarToggle" title="Toggle sidebar">☰</button>
+    <div class="brand">Traffic&nbsp;Simulation</div>
+
+    <div class="topbar-group">
+      <button id="zoomOutBtn" title="Zoom out">−</button>
+      <span id="zoomReadout">100%</span>
+      <button id="zoomInBtn" title="Zoom in">+</button>
+      <button id="fitBtn" title="Fit whole map in view">Fit</button>
+    </div>
+
+    <div class="topbar-group">
+      <span class="rotate-icon" title="Rotate map">⟳</span>
+      <input type="range" id="rotationSlider" min="-180" max="180" step="1" value="0" title="Rotate the map view">
+      <span id="rotationReadout">0°</span>
+      <button id="rotationResetBtn" title="Reset rotation to 0°">Reset</button>
+    </div>
+
+    <div class="topbar-group topbar-right">
+      <a class="tool-btn" href="editor.html" title="Open the map editor">✏️ Editor</a>
+      <button id="closeServerBtn" title="Shut down the local serve.py server">⏻ Close</button>
+    </div>
+  </header>
+
+  <div id="main-area">
+
+    <aside id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Simulation</div>
+        <button id="simPlayBtn" title="Play/pause the fixed-time traffic-light simulation">▶ Play</button>
+        <button id="simResetBtn" title="Reset the simulation clock to 0">↺ Sim Reset</button>
+      </div>
+
+      <div class="sidebar-section" id="selectionFiltersSection">
+        <div class="sidebar-section-title">Selection Filters</div>
+        <div id="selectionFiltersContainer" style="display: flex; flex-direction: column; gap: 4px; max-height: 250px; overflow-y: auto; padding-right: 4px;">
+          <!-- Checkboxes generated dynamically in map-core.js -->
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">View</div>
+        <button id="arrowsToggleBtn" title="Show/hide one-way direction arrows">↗ Arrows</button>
+        <button id="timersToggleBtn" title="Show/hide traffic-light countdown timers">⏱ Timers</button>
+        <button id="buildingsToggleBtn" title="Show/hide buildings">🏢 Buildings</button>
+        <button id="amenitiesToggleBtn" title="Show/hide amenities">📍 Amenities</button>
+        <button id="settingsBtn" title="Simulation view settings">⚙ Settings</button>
+      </div>
+    </aside>
+
+    <main id="workspace">
+      <canvas id="mapCanvas"></canvas>
+
+      <div id="hint">Read-only viewer: drag to pan, scroll to zoom, click a feature to inspect it.</div>
+
+      <div id="toast" hidden></div>
+
+      <aside id="inspector" hidden>
+        <div class="insp-head">
+          <span id="inspTitle">Selection</span>
+          <button id="inspClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="inspBody"></div>
+      </aside>
+
+      <aside id="settingsPanel" hidden>
+        <div class="insp-head">
+          <span>Settings</span>
+          <button id="settingsClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="settingsBody"></div>
+      </aside>
+    </main>
+
+  </div>
+
+  <footer id="statusbar">
+    <span id="statTool">Simulation viewer (read-only)</span>
+    <span id="statCoords">lat --, lon --</span>
+    <span id="statCounts">-- nodes, -- roads</span>
+    <span id="statSelection"></span>
+  </footer>
+
+</div>
+
+<script src="map-core.js"></script>
+<script src="settings.js"></script>
+<script src="redlight.js"></script>
+<script src="simulation.js"></script>
+</body>
+</html>
