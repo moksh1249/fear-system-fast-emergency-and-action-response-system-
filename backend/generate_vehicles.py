@@ -64,14 +64,22 @@ DEFAULT_VEHICLE_MIX = {
 
 # Per-type (min, max) ranges a real-world vehicle of that type would
 # plausibly fall into. maxSpeedKmh is the VEHICLE's own capability ceiling,
-# not a road speed limit - the future engine combines this with each road
-# segment's own limit (min of the two) when deciding a desired speed.
+# not a road speed limit - the simulation engine combines this with each
+# road segment's own limit (min of the two) when deciding a desired speed.
+# accelMps2 is the vehicle's own comfortable acceleration capability (IDM's
+# aMax) - previously a fixed per-type constant baked into sim_engine.cpp's
+# own profileFor() table; now generated per-vehicle here instead, so a
+# gutless overloaded truck and a nimble one aren't identical. Ranges reflect
+# real capability differences: a car/ambulance can accelerate briskly, a
+# loaded bus or truck cannot, matching each type's own realistic top speed
+# (car up to 120kmh, truck up to 80kmh, ambulance up to 130kmh, per the
+# project's own brief).
 VEHICLE_PROFILES = {
-    "car":        {"length": (4.0, 5.1), "width": (1.6, 1.95), "height": (1.35, 1.65), "weightKg": (1000, 1900), "maxSpeedKmh": (140, 180)},
-    "motorcycle": {"length": (1.8, 2.3), "width": (0.65, 0.9), "height": (1.05, 1.4), "weightKg": (110, 260), "maxSpeedKmh": (90, 160)},
-    "bus":        {"length": (9.0, 12.5), "width": (2.4, 2.6), "height": (3.0, 3.6), "weightKg": (8000, 14000), "maxSpeedKmh": (70, 100)},
-    "truck":      {"length": (6.0, 12.0), "width": (2.3, 2.6), "height": (2.5, 3.8), "weightKg": (5000, 16000), "maxSpeedKmh": (70, 100)},
-    "ambulance":  {"length": (5.5, 6.5), "width": (2.0, 2.3), "height": (2.4, 2.85), "weightKg": (2500, 4500), "maxSpeedKmh": (120, 160)},
+    "car":        {"length": (4.0, 5.1), "width": (1.6, 1.95), "height": (1.35, 1.65), "weightKg": (1000, 1900), "maxSpeedKmh": (90, 120), "accelMps2": (2.2, 3.2)},
+    "motorcycle": {"length": (1.8, 2.3), "width": (0.65, 0.9), "height": (1.05, 1.4), "weightKg": (110, 260), "maxSpeedKmh": (80, 110), "accelMps2": (3.0, 4.5)},
+    "bus":        {"length": (7.0, 10.0), "width": (2.4, 2.6), "height": (3.0, 3.6), "weightKg": (8000, 14000), "maxSpeedKmh": (60, 85), "accelMps2": (0.8, 1.4)},
+    "truck":      {"length": (6.0, 12.0), "width": (2.3, 2.6), "height": (2.5, 3.8), "weightKg": (5000, 16000), "maxSpeedKmh": (60, 80), "accelMps2": (0.7, 1.3)},
+    "ambulance":  {"length": (5.5, 6.5), "width": (2.0, 2.3), "height": (2.4, 2.85), "weightKg": (2500, 4500), "maxSpeedKmh": (100, 130), "accelMps2": (2.6, 3.6)},
 }
 
 MIN_DRIVER_AGE, MAX_DRIVER_AGE = 16, 80
@@ -393,6 +401,7 @@ def generate(map_data, count, seed, min_trip_m, vehicle_mix):
             "height": random_in_range(rng, profile["height"]),
             "weightKg": round(rng.uniform(*profile["weightKg"])),
             "maxSpeedKmh": round(rng.uniform(*profile["maxSpeedKmh"]), 1),
+            "accelMps2": round(rng.uniform(*profile["accelMps2"]), 2),
             "driverAge": rng.randint(MIN_DRIVER_AGE, MAX_DRIVER_AGE),
             "responseTimeSec": None,  # filled below, needs driverAge
             "homeAmenityId": home_amenity_id,
@@ -424,7 +433,7 @@ def generate(map_data, count, seed, min_trip_m, vehicle_mix):
 
 CSV_FIELDS = [
     "id", "vehicleType", "startNodeId", "endNodeId", "startX", "startY", "endX", "endY",
-    "length", "width", "height", "weightKg", "maxSpeedKmh", "driverAge", "responseTimeSec",
+    "length", "width", "height", "weightKg", "maxSpeedKmh", "accelMps2", "driverAge", "responseTimeSec",
     "homeAmenityId", "homeHospitalName",
 ]
 

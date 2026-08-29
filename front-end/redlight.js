@@ -556,6 +556,21 @@ function getRedlightCountdown(node, nodeId, clockSec, wayId, movement) {
     const forced = (override.greenLamps || []).some((g) => g.wayId === wayId && g.movement === movement);
     return { color: forced ? "green" : "red", remainingSec: 0, overridden: true };
   }
+  // The live simulation engine running EmergencyOnly/Density mode (see
+  // sim_engine.cpp's SignalMode) decides this junction's lamp colors itself
+  // every tick via live arbitration, not the fixed-time math below - see
+  // sim-client.js's handling of the per-tick "lamps" field for how this map
+  // gets populated (and cleared back to empty in Default mode/on disconnect).
+  // EmergencyOnly mode deliberately OMITS a junction from that field unless
+  // an ambulance is actually preempting it right now (see sim_engine.cpp's
+  // buildStateJson) - so a plain `if (simLamps)` miss here for that junction
+  // correctly falls through to the ordinary fixed-time math below, giving it
+  // a real countdown timer instead of a frozen placeholder.
+  const simLamps = State.simLampOverrides && State.simLampOverrides.get(nodeId);
+  if (simLamps) {
+    const entry = simLamps.get(`${wayId}|${movement}`);
+    return { color: (entry && entry.color) || "red", remainingSec: 0, overridden: true, simReason: entry && entry.reason };
+  }
   if (signal.groupId) {
     const info = getGroupTurnInfo(signal.groupId, clockSec);
     if (info) {
@@ -627,6 +642,12 @@ function setSimSpeed(mult) {
   Sim.speedMultiplier = v;
   updateSimSpeedReadout();
   updateSimDurationReadout();
+  // When the C++ live-vehicle engine (sim-client.js) is running, this is the
+  // one control users reach for to fast-forward - without this it silently
+  // did nothing to the actual moving vehicles, since Sim.speedMultiplier
+  // only ever drove the local fixed-time signal clock. liveSimSendCommand
+  // itself no-ops if the engine isn't connected, so this is safe to always call.
+  if (typeof liveSimSendCommand === "function") liveSimSendCommand({ cmd: "setSpeed", value: v });
   return v;
 }
 
@@ -973,8 +994,8 @@ function drawRedlights() {
       // The stop line acts like a wall: present unless BOTH movements are
       // clear to go, gone only once neither has any reason to stop there.
       if (cdThrough.color !== "green" || cdRight.color !== "green") drawStopLine(node, nodeId, a);
-      drawLampGlyph(node, a, cdThrough.color, cdThrough.remainingSec, overridden, "through");
-      drawLampGlyph(node, a, cdRight.color, cdRight.remainingSec, overridden, "right");
+      drawLampGlyph(node, a, cdThrough.color, cdThrough.remainingSec, overridden, "through", cdThrough.simReason);
+      drawLampGlyph(node, a, cdRight.color, cdRight.remainingSec, overridden, "right", cdRight.simReason);
     }
     if (overridden) drawExternalControlBadge(node);
   }
@@ -1125,7 +1146,7 @@ const LAMP_LATERAL_MARGIN_M = 0.8; // extra margin beyond the kerb edge (two-way
 // is deliberately presentation-only for now (see drawMovementArrow).
 const LAMP_MOVEMENT_SPACING_M = 3.2;
 
-function drawLampGlyph(node, approach, color, remainingSec, overridden, movement) {
+function drawLampGlyph(node, approach, color, remainingSec, overridden, movement, simReason) {
   const liveScale = State.view.scale;
   const mult = Config.signalLampSizeMultiplier || 1;
   // sizingScale drives how big the glyph renders (in px) - it has no bearing
@@ -1204,24 +1225,30 @@ function drawLampGlyph(node, approach, color, remainingSec, overridden, movement
   // screen direction.
   drawMovementArrow(sp, radius, approach, movement);
 
-  // Dashed violet ring around this one lamp when it's a forced state from an
-  // external override, distinct from the whole-intersection pulsing badge
-  // drawExternalControlBadge draws (that one's visible from further away;
-  // this one pins the override to the exact approach it's forcing).
-  if (overridden) {
+  // Dashed ring around this one lamp when it's a forced state - violet for a
+  // manual external override (see drawExternalControlBadge for the matching
+  // whole-intersection badge), red for a genuine live-engine emergency
+  // preemption (see sim_engine.cpp's SignalMode/buildStateJson) - distinct
+  // colors so the two very different reasons for a forced lamp don't look
+  // identical on the map.
+  const simRingColor = simReason === "emergency" ? "#ef476f" : simReason === "density" ? "#ffd166" : null;
+  if (overridden || simRingColor) {
     ctx.save();
     ctx.beginPath();
     ctx.arc(sp.x, sp.y, radius + 3, 0, Math.PI * 2);
     ctx.setLineDash([3, 3]);
     ctx.lineWidth = 2;
-    ctx.strokeStyle = EXT_CONTROL_COLOR;
+    ctx.strokeStyle = overridden ? EXT_CONTROL_COLOR : simRingColor;
     ctx.stroke();
     ctx.restore();
   }
 
-  // Countdown label (or "CTRL" while a remainingSec-less forced state is in
-  // effect) - drawn under each head independently. The paired scheme's two
-  // heads genuinely differ (see getPairedMovementCountdown), so both are
+  // Countdown label - a real countdown for the ordinary fixed-time case,
+  // "CTRL" for a manual external override, or a short reason tag for a
+  // live-engine-driven color that has no fixed countdown to show (real
+  // preemption, or Density mode's continuous weight-based arbitration - see
+  // SignalMode) - drawn under each head independently. The paired scheme's
+  // two heads genuinely differ (see getPairedMovementCountdown), so both are
   // worth showing; LAMP_MOVEMENT_SPACING_M keeps them far enough apart that
   // two 2-digit numbers don't visually run together into one 4-digit one.
   if (Config.showSignalTimers && radius >= LAMP_MAX_RADIUS_PX * mult * 0.5) {
@@ -1229,12 +1256,13 @@ function drawLampGlyph(node, approach, color, remainingSec, overridden, movement
     ctx.font = `bold ${Math.round(Math.min(13, Math.max(9, radius + 2)))}px 'Space Grotesk', sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    const label = overridden ? "CTRL" : String(Math.max(0, Math.ceil(remainingSec)));
+    const label = overridden ? "CTRL" : simReason === "emergency" ? "EMRG" : simReason === "density" ? "AUTO"
+      : String(Math.max(0, Math.ceil(remainingSec)));
     const ty = sp.y + radius + 2;
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = "rgba(255,255,255,0.9)";
     ctx.strokeText(label, sp.x, ty);
-    ctx.fillStyle = overridden ? EXT_CONTROL_COLOR : "#1a1a2e";
+    ctx.fillStyle = overridden ? EXT_CONTROL_COLOR : simRingColor || "#1a1a2e";
     ctx.fillText(label, sp.x, ty);
     ctx.restore();
   }

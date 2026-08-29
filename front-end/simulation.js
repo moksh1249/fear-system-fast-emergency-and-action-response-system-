@@ -28,6 +28,11 @@ function renderInspector() {
 
   if (!State.selected.length) { panel.hidden = true; return; }
   body.innerHTML = "";
+  // Vehicle selection (sim-client.js's liveSimRenderInfoPanel) shares this
+  // same panel but bypasses State.selected entirely - this marker is how the
+  // two sides avoid stomping on each other when switching between them (see
+  // liveSimClearVehicleSelection and the mouseup handler below).
+  panel.dataset.owner = "feature";
 
   if (State.selected.length > 1) {
     panel.hidden = false;
@@ -61,7 +66,10 @@ function renderInspector() {
       el("div", { class: "field" }, el("label", {}, "Connected roads"),
         el("div", { class: "readonly" }, String(connectedWaysSorted(sel.id).length))),
     );
-    if (node.signal) body.append(renderExternalControlPanel(sel.id));
+    if (node.signal) {
+      body.append(renderExternalControlPanel(sel.id));
+      if (typeof liveSimRenderApproachWeights === "function") body.append(liveSimRenderApproachWeights(sel.id));
+    }
     body.append(tagsReadout(node.tags));
   } else if (sel.type === "way") {
     const way = State.ways.get(sel.id);
@@ -277,6 +285,25 @@ window.addEventListener("mouseup", (e) => {
   if (moved >= 4) return; // a real drag, not a click - leave selection alone
 
   const world = screenToWorld(sx, sy);
+
+  // An armed emergency-dispatch incident pick (see sim-client.js's
+  // liveSimBeginIncidentPick) consumes the very next map click regardless of
+  // what's under it - takes priority over vehicle/feature selection below.
+  if (window.LiveSim && LiveSim.pickingEmergencyForId != null) {
+    liveSimCompleteIncidentPick(world);
+    return;
+  }
+
+  // Live-simulation vehicles are their own independent, non-filterable
+  // overlay (see sim-client.js) - checked first since they render on top of
+  // everything else, and handled entirely through LiveSim.selectedId rather
+  // than State.selected/setSelection, so it never disturbs the ordinary
+  // node/way/building/amenity inspector below.
+  if (typeof liveSimFindVehicleAt === "function" && window.LiveSim && LiveSim.connected) {
+    const vehicleHit = liveSimFindVehicleAt(world, 10);
+    if (vehicleHit) { liveSimSelectVehicle(vehicleHit.id); return; }
+  }
+
   const nodeHit = findNodeAtWithDist(world, 9);
   const markerHit = findClusterMarkerAt(world, 9);
   let nid = null;
@@ -291,11 +318,15 @@ window.addEventListener("mouseup", (e) => {
   let bid = (!nid && !aid && !wid) ? findBuildingAt(world) : null;
   if (bid && !isItemSelectable("building", bid)) bid = null;
 
+  if ((nid || aid || wid || bid) && typeof liveSimClearVehicleSelection === "function") liveSimClearVehicleSelection();
   if (nid) setSelection([{ type: "node", id: nid }]);
   else if (aid) setSelection([{ type: "amenity", id: aid }]);
   else if (wid) setSelection([{ type: "way", id: wid }]);
   else if (bid) setSelection([{ type: "building", id: bid }]);
-  else clearSelection();
+  else {
+    clearSelection();
+    if (typeof liveSimClearVehicleSelection === "function") liveSimClearVehicleSelection();
+  }
 });
 
 window.addEventListener("keydown", (e) => {

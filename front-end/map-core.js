@@ -134,6 +134,12 @@ const State = {
   // Python/C++ script hitting POST /api/signal/override shows up here too.
   signalFreeze: new Map(),      // freezeKey ("n:"+nodeId or "g:"+groupId) -> {offset, frozenAt, refCount}
   externalOverrides: new Map(), // nodeId -> {wayId, controller, since}
+  // Live simulation engine's own lamp colors (EmergencyOnly/Density mode
+  // only - see sim_engine.cpp's SignalMode and sim-client.js's state
+  // handler): nodeId -> Map("wayId|movement" -> "green"|"red"). Empty
+  // whenever the engine isn't running that mode, in which case
+  // getRedlightCountdown falls through to its usual fixed-time math.
+  simLampOverrides: new Map(),
 
   view: { scale: 1, cx: 0, cy: 0, rotation: 0 }, // scale = px per metre; (cx,cy) = world point at canvas centre; rotation in radians
   tool: "pan",
@@ -449,6 +455,7 @@ function loadData(data) {
   // re-applied on the next poll, against whatever node id it actually names).
   State.signalFreeze = new Map();
   State.externalOverrides = new Map();
+  State.simLampOverrides = new Map();
   State.redlightGroups = new Map();
   for (const g of (data.redlightGroups || [])) {
     State.redlightGroups.set(g.id, {

@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -69,6 +70,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <timeapi.h>
 
 #include "../ch/json.hpp"
 #include "../ch/ch_graph.hpp"
@@ -82,6 +84,21 @@ static double dist2d(double ax, double ay, double bx, double by) {
     double dx = ax - bx, dy = ay - by;
     return std::sqrt(dx * dx + dy * dy);
 }
+
+// Windows' default scheduler timer granularity is commonly ~15ms, which
+// std::this_thread::sleep_for rounds up to - even the main loop's ordinary
+// per-tick sleep (see step 7) is a nominal ~50ms, so that overshoot alone
+// was measured costing the real-time pacing loop a consistent ~15-20% of
+// its target rate at EVERY speedMultiplier, not just the very short sleeps
+// the tick-batching fix (see step 7's own comment) already addresses.
+// timeBeginPeriod(1) requests 1ms system-wide scheduler resolution for as
+// long as this process holds it (paired with timeEndPeriod in the
+// destructor - RAII so it's released on every exit path, including an
+// exception unwinding out of main's try block).
+struct TimerResolutionGuard {
+    TimerResolutionGuard() { timeBeginPeriod(1); }
+    ~TimerResolutionGuard() { timeEndPeriod(1); }
+};
 
 // ---------------------------------------------------------------------------
 // Domain rules shared with backend/ch/ch_preprocess.cpp's buildGraph() - kept
@@ -144,7 +161,29 @@ static int highwayPriorityRank(const std::string& hw) {
 }
 
 static constexpr double TURN_SPEED_MPS = 15.0 / 3.6;         // matches ch_preprocess.cpp's TURN_SPEED_KMH
-static constexpr double MIN_DISCHARGE_GAP_SEC = 2.0;          // minimum headway between successive discharges at an unsignalized junction
+static constexpr double DEFAULT_LANE_WIDTH_M = 3.2;           // matches front-end/settings.js's Config.defaultLaneWidth - a way's own tags.lane_width (see buildRoadGraph) overrides this exactly as map-core.js's wayPhysicalWidth does
+static constexpr double MIN_DISCHARGE_GAP_SEC = 1.2;          // minimum headway between successive discharges at an unsignalized junction - shortened along with the rest of the "selfish driver" tuning, see profileFor
+// A vehicle's effective priority at an unsignalized junction climbs the
+// longer it's waited (see the arbitration step), so a low-class approach
+// isn't starved forever behind a busier cross-street - a real, impatient
+// driver eventually just goes. This is also what makes the simulation
+// useful for spotting where a real traffic light is needed: a junction that
+// still backs up even with drivers this willing to push in is a genuine
+// candidate, not an artifact of overly-polite simulated drivers.
+static constexpr double IMPATIENCE_SEC = 6.0;
+// How far before a chain edge's end (the pulled-back junction node - see
+// this file's header) a blocked vehicle actually stops, so it doesn't sit
+// rendered/logically inside the visual intersection footprint (map-core.js
+// draws its own junction clearance ring starting at JUNCTION_SETBACK_M=1.5m
+// back from that same node, growing further for wide/crowded junctions -
+// this is a fixed approximation of that rather than a full port of its
+// crowding-growth algorithm, which is a purely cosmetic computation not
+// worth duplicating in the physics engine).
+static constexpr double STOP_LINE_SETBACK_M = 2.0;
+// Minimum clearance a route's first edge/lane must have near position 0
+// before a new trip is allowed to spawn onto it - see the spawn step's own
+// comment. Sized to comfortably clear even a long truck/bus, not just a car.
+static constexpr double SPAWN_CLEARANCE_M = 10.0;
 
 // ---------------------------------------------------------------------------
 // Signal model - a direct port of front-end/redlight.js's fixed-time phase
@@ -278,7 +317,7 @@ static std::string getPairedColor(const SignalConfig& cfg, double clockSec, cons
     double yellowSec = std::max(0.0, cfg.pairedYellowSec);
     bool isA = (wayId == pair.wayA);
     double redStart, redDur;
-    if (movement == "right") { redStart = isA ? stepSec : 3 * stepSec; redDur = 3 * stepSec; }
+    if (movement == "right" || movement == "uturn") { redStart = isA ? stepSec : 3 * stepSec; redDur = 3 * stepSec; }
     else { redStart = isA ? 2 * stepSec : 0; redDur = stepSec; }
     return pairedMovementState(redStart, redDur, yellowSec, cycleLen, localT);
 }
@@ -308,11 +347,31 @@ static GroupTurnInfo getGroupTurnInfo(const RedlightGroupConfig& g, double clock
 // (through-compatible); anything meaningfully CW is a right turn. A small
 // epsilon avoids misclassifying a nearly-straight move as "right" from
 // floating-point noise.
+// The u-turn check comes first and uses the dot product directly: near
+// dot=-1 (arrival and departure nearly opposite) the cross-product's SIGN is
+// dominated by floating-point noise, which used to misclassify u-turns as
+// "right" or "through" at random - a real bug, not just cosmetic, since
+// movement also drives the signal-timing lookup (see getPairedColor) and,
+// now, lane choice (see desiredLaneForStep). U-turns happen at this map's
+// divided roads, where the two carriageways are separate ways that still
+// share a join_group at the crossing point.
 static std::string classifyMovement(double arrDirX, double arrDirY, double depDirX, double depDirY) {
-    double cross = arrDirX * depDirY - arrDirY * depDirX;
     double dot = arrDirX * depDirX + arrDirY * depDirY;
+    if (dot < -0.7) return "uturn";
+    double cross = arrDirX * depDirY - arrDirY * depDirX;
     double angle = std::atan2(cross, dot);
     return (angle < -0.1) ? "right" : "through";
+}
+
+// The physical speed a vehicle can carry through a junction crossing depends
+// on how sharp the turn is, not just the junction's approach roads' own
+// speed (see JunctionInfo::approachSpeedMps, the average of those) - through
+// traffic barely needs to slow, a right turn crosses oncoming traffic and
+// must slow more, a u-turn is the sharpest turn there is.
+static double movementSpeedFactor(const std::string& movement) {
+    if (movement == "through") return 1.0;
+    if (movement == "uturn") return 0.35;
+    return 0.55; // "right"
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +385,15 @@ struct ChainEdge {
     std::string wayId;
     double lengthM;
     double freeFlowSpeedMps;
-    int lanes;
+    int lanes;              // raw tags.lanes - total across BOTH directions on a two-way road (matches map-core.js's wayPhysicalWidth convention), or this direction's own count on a one-way road
+    int lanesPerDirection;  // lanes actually usable going THIS way - see simLaneCount/buildRoadGraph
+    double laneWidthM;
+    // Offset from the way's own node-chain (its geometric centreline) to the
+    // centre of THIS direction's carriageway, toward the LEFT of travel
+    // (this map's left-hand-traffic convention) - 0 for a one-way road
+    // (the whole road is "my" carriageway, no divider to sit on top of).
+    // See buildRoadGraph's own comment for why this exists.
+    double carriagewayCenterOffsetM;
     int highwayRank;
 };
 
@@ -334,25 +401,52 @@ struct JunctionEdge {
     int from, to;
     std::string fromWayId;   // arrival approach - signal/priority lookup key
     std::string toWayId;     // departure approach
-    std::string movement;    // "through" | "right"
+    std::string movement;    // "through" | "right" | "uturn"
     double lengthM;
     double speedMps;
     int junctionIdx;
     int priorityRank;        // = highway rank of fromWayId
+    // Unit tangent direction the vehicle is already travelling in on
+    // arrival (same as the departing-way direction used by
+    // classifyMovement) and the one it needs to be travelling in on
+    // departure - used only for buildStateJson's curved-turn rendering
+    // (see its own comment), not by any physics/routing here.
+    double arrDirX = 0, arrDirY = 0, depDirX = 0, depDirY = 0;
 };
 
 struct OutEdgeRef { bool isJunction; int index; };
+
+// One unsignalized-junction crossing currently "in flight" - tracked per
+// junction instead of a single busyUntil scalar so genuinely non-conflicting
+// movements (see the arbitration step's compatible() lambda) can occupy the
+// same junction at once. This is the "width of the intersection should let
+// more than one vehicle through" fix: a wide/multi-arm junction naturally
+// ends up with several of these active simultaneously, a narrow single-lane
+// T-junction still only ever has one (nothing to run it alongside).
+struct JctFlight {
+    double freeAt;
+    std::string fromWayId, movement, toWayId;
+    double arrDirX, arrDirY;
+};
 
 struct JunctionInfo {
     std::string joinGroupId;
     int primaryNodeIdx;
     std::vector<int> memberIndices;
     SignalConfig signal;
+    // Average free-flow speed of the roads that actually meet here (see
+    // buildRoadGraph) - the basis for each JunctionEdge's own speed cap
+    // (movementSpeedFactor scales it down per turn sharpness). Defaults to
+    // the old flat constant if no approach way was found.
+    double approachSpeedMps = TURN_SPEED_MPS;
     // Runtime arbitration state (unsignalized junctions only) - see the main
-    // loop's step 3: only one vehicle may enter per MIN_DISCHARGE_GAP_SEC
-    // window, a coarse "one at a time" approximation appropriate at
-    // flow-channel fidelity (real conflict-point geometry is out of scope).
-    double busyUntil = 0.0;
+    // loop's step 3: any number of vehicles may be in flight at once as long
+    // as every pair is geometrically compatible (same-approach different
+    // lane, or opposite approaches both going straight/left), each gated by
+    // its own MIN_DISCHARGE_GAP_SEC headway. Genuinely conflicting movements
+    // (crossing approaches, or anything crossing oncoming traffic) still
+    // serialize - flow-channel fidelity, not full conflict-point geometry.
+    std::vector<JctFlight> inFlight;
 };
 
 struct RoadGraph {
@@ -366,6 +460,14 @@ struct RoadGraph {
     std::unordered_map<std::string, int> junctionIndexByGroupId;
     std::unordered_map<std::string, RedlightGroupConfig> redlightGroups;
 };
+
+// At most 2 SIMULATED lanes per direction regardless of ce.lanesPerDirection
+// (see desiredLaneForStep) - a flat cap so a road tagged with an unusually
+// high lane count doesn't add a third lane's worth of complexity; in
+// practice almost every two-way road in this map has lanesPerDirection==1
+// (see buildRoadGraph - lanes is a TOTAL across both directions), so this
+// mostly matters for one-way roads tagged lanes>=2.
+static int simLaneCount(const ChainEdge& ce) { return std::min(2, std::max(1, ce.lanesPerDirection)); }
 
 static RoadGraph buildRoadGraph(const JsonValue& root) {
     RoadGraph rg;
@@ -399,6 +501,7 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
     // the rare/malformed case of more than one.
     std::unordered_map<int, std::vector<std::tuple<std::string, double, double>>> terminalOutward;
     std::unordered_map<std::string, int> wayHighwayRank;
+    std::unordered_map<std::string, double> wayFreeFlowSpeed;
 
     long long chainEdgeCount = 0, skippedWays = 0;
     for (auto& wayVal : waysJson->arrVal) {
@@ -427,8 +530,14 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
             auto lv = tags->str("lanes");
             if (lv) { try { lanes = std::max(1, std::stoi(*lv)); } catch (...) {} }
         }
+        double laneWidthM = DEFAULT_LANE_WIDTH_M;
+        if (tags) {
+            auto lw = tags->str("lane_width");
+            if (lw) { try { double v = std::stod(*lw); if (v > 0) laneWidthM = v; } catch (...) {} }
+        }
         int rank = highwayPriorityRank(highway);
         wayHighwayRank[wayId] = rank;
+        wayFreeFlowSpeed[wayId] = speedMps;
 
         std::string oneway = tags ? tags->str("oneway").value_or("") : "";
         std::string junction = tags ? tags->str("junction").value_or("") : "";
@@ -436,6 +545,19 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
         if (oneway == "yes") backward = false;
         else if (oneway == "-1") forward = false;
         else if (oneway != "no" && junction == "roundabout") backward = false;
+
+        // `lanes` is the road's TOTAL lane count across both directions on a
+        // two-way road (matching map-core.js's wayPhysicalWidth, which this
+        // mirrors so vehicles line up with what the map actually draws) -
+        // NOT how many lanes are usable going any one way. A two-way road's
+        // own node chain runs down its geometric centreline (the same
+        // points map-core.js draws a divider ON, for a divided=yes road),
+        // so without carriagewayCenterOffsetM a vehicle going either
+        // direction would render straddling that centreline/divider -
+        // exactly the "cars sit on top of the divider" bug this fixes.
+        bool twoWay = forward && backward;
+        int lanesPerDirection = twoWay ? std::max(1, lanes / 2) : lanes;
+        double carriagewayCenterOffsetM = twoWay ? (lanes * laneWidthM) / 4.0 : 0.0;
 
         std::vector<int> chain;
         chain.reserve(nodesArr->arrVal.size());
@@ -449,12 +571,12 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
         for (size_t k = 0; k + 1 < chain.size(); ++k) {
             double d = dist2d(rg.nodeX[chain[k]], rg.nodeY[chain[k]], rg.nodeX[chain[k + 1]], rg.nodeY[chain[k + 1]]);
             if (forward) {
-                rg.chainEdges.push_back({chain[k], chain[k + 1], wayId, d, speedMps, lanes, rank});
+                rg.chainEdges.push_back({chain[k], chain[k + 1], wayId, d, speedMps, lanes, lanesPerDirection, laneWidthM, carriagewayCenterOffsetM, rank});
                 rg.outAdj[chain[k]].push_back({false, (int)rg.chainEdges.size() - 1});
                 chainEdgeCount++;
             }
             if (backward) {
-                rg.chainEdges.push_back({chain[k + 1], chain[k], wayId, d, speedMps, lanes, rank});
+                rg.chainEdges.push_back({chain[k + 1], chain[k], wayId, d, speedMps, lanes, lanesPerDirection, laneWidthM, carriagewayCenterOffsetM, rank});
                 rg.outAdj[chain[k + 1]].push_back({false, (int)rg.chainEdges.size() - 1});
                 chainEdgeCount++;
             }
@@ -503,12 +625,33 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
         auto pnit = nodeById.find(rg.nodeId[primary]);
         info.signal = parseSignal(pnit != nodeById.end() ? pnit->second->find("signal") : nullptr);
 
+        // Max intersection speed = the average free-flow speed of the roads
+        // that actually meet here (this map's real junctions are typically
+        // 3-4 approaches - see terminalOutward) rather than a flat constant,
+        // so a junction of two 60kph roads lets through traffic move faster
+        // than one between two 30kph residential streets.
+        {
+            std::unordered_set<std::string> approachWays;
+            for (int m : members) {
+                auto it = terminalOutward.find(m);
+                if (it != terminalOutward.end())
+                    for (auto& entry : it->second) approachWays.insert(std::get<0>(entry));
+            }
+            double sumSpeed = 0; int nSpeed = 0;
+            for (auto& wid : approachWays) {
+                auto sit = wayFreeFlowSpeed.find(wid);
+                if (sit != wayFreeFlowSpeed.end()) { sumSpeed += sit->second; nSpeed++; }
+            }
+            if (nSpeed > 0) info.approachSpeedMps = sumSpeed / nSpeed;
+        }
+
         int junctionIdx = (int)rg.junctions.size();
         rg.junctionIndexByGroupId[gid] = junctionIdx;
         rg.junctions.push_back(std::move(info));
 
         if (members.size() < 2) continue; // a lone member has nothing to cross to
 
+        double approachSpeedMps = rg.junctions[junctionIdx].approachSpeedMps;
         for (int a : members) {
             for (int b : members) {
                 if (a == b) continue;
@@ -530,8 +673,10 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
                 JunctionEdge je;
                 je.from = a; je.to = b;
                 je.fromWayId = fromWayId; je.toWayId = toWayId;
+                je.arrDirX = arrDirX; je.arrDirY = arrDirY; je.depDirX = depDirX; je.depDirY = depDirY;
                 je.movement = classifyMovement(arrDirX, arrDirY, depDirX, depDirY);
-                je.lengthM = d; je.speedMps = TURN_SPEED_MPS;
+                je.lengthM = d;
+                je.speedMps = std::max(TURN_SPEED_MPS * 0.5, movementSpeedFactor(je.movement) * approachSpeedMps);
                 je.junctionIdx = junctionIdx;
                 je.priorityRank = fromWayId.empty() ? 0 : wayHighwayRank[fromWayId];
 
@@ -564,9 +709,59 @@ static void parseRedlightGroups(const JsonValue& root, RoadGraph& rg) {
     }
 }
 
+// Phase 4: the other two signal-control modes, runtime-switchable (CLI
+// --signal-mode, or live via {"cmd":"setSignalMode","value":...} - see
+// handleCommand).
+//   - EmergencyOnly: a signalized junction runs the EXACT SAME fixed-time
+//     math as Default mode (computeLampColor, complete with its normal
+//     phase timer) UNLESS a vehicle with emergency==true (see Vehicle's own
+//     comment and handleCommand's triggerEmergency - a manual "responding"
+//     toggle, deliberately distinct from merely being vehicleType==
+//     "ambulance") is at the front of one of this junction's approach
+//     queues, in which case that whole approach is forced green and every
+//     other approach forced red for as long as the emergency vehicle
+//     occupies that front-of-queue position - real Opticom-style
+//     preemption, not a rank bonus fed into ordinary arbitration. See the
+//     main loop's step 3 (emergencyPreemptApproach) and buildStateJson's
+//     lamps array (which is why a NON-preempted EmergencyOnly junction is
+//     deliberately left OUT of that array - see its own comment - letting
+//     the client's identical fixed-time math render a real countdown timer
+//     instead of a frozen placeholder).
+//   - Density: reuses the unsignalized-junction arbitration already built
+//     for the "width of the intersection" fix (candidatesForJunction/
+//     movementsCompatible/JctFlight below) instead of a fixed phase table -
+//     a signalized junction's rank is its approach's live "red dot" weight
+//     (count of vehicles currently waiting for this red light, plus the
+//     seconds each has been waiting - see Vehicle::waitingLight and the main
+//     loop's step 3) rather than a fixed road class, so the busiest-AND-
+//     longest-waiting approach simply outranks the others every tick - a
+//     live actuated-signal approximation with deliberately no fixed phase
+//     table/timer to advance or hold.
+// Both modes' signalized junctions are ALSO subject to the same
+// emergency-preemption override described above (an emergency vehicle wins
+// outright regardless of mode); only Default mode has no ambulance-awareness
+// at all. Every genuinely unsignalized junction (~99.9% of this map's
+// junctions) is unaffected by mode either way - there is no fixed phase
+// there for either mode to replace.
+enum class SignalMode { Default, EmergencyOnly, Density };
+
+static SignalMode signalModeFromString(const std::string& s) {
+    if (s == "emergency") return SignalMode::EmergencyOnly;
+    if (s == "density") return SignalMode::Density;
+    return SignalMode::Default;
+}
+static const char* signalModeToString(SignalMode m) {
+    switch (m) {
+        case SignalMode::EmergencyOnly: return "emergency";
+        case SignalMode::Density: return "density";
+        default: return "default";
+    }
+}
+
 // Top-level per-lamp color dispatch - port of redlight.js's getRedlightCountdown
 // (minus the external-override branch, which has no equivalent in this
-// headless engine; Phase 4/5 add their own internal preemption on top of this).
+// headless engine). Only ever consulted for SignalMode::Default - see that
+// enum's own comment for the other two modes' completely different path.
 static std::string computeLampColor(const RoadGraph& rg, int junctionIdx, const std::string& wayId, const std::string& movement, double clockSec) {
     const JunctionInfo& j = rg.junctions[junctionIdx];
     if (!j.signal.present) return "green"; // unsignalized junctions are gated by arbitration, not this function
@@ -590,6 +785,14 @@ static std::string computeLampColor(const RoadGraph& rg, int junctionIdx, const 
 // ---------------------------------------------------------------------------
 
 struct RouteStep { bool isJunction; int edgeIndex; double length; };
+
+// The RoadGraph node index a step ENDS at, regardless of whether it's a
+// chain or junction edge - used by emergency dispatch (see handleCommand's
+// triggerEmergency and the main loop's edge-transition step) to splice a
+// fresh route on from wherever a vehicle currently is.
+static int stepToNode(const RoadGraph& rg, const RouteStep& s) {
+    return s.isJunction ? rg.junctionEdges[s.edgeIndex].to : rg.chainEdges[s.edgeIndex].to;
+}
 
 static std::string stripDirectionSuffix(const std::string& id) {
     if (id.size() > 4 && id.compare(id.size() - 4, 4, "#fwd") == 0) return id.substr(0, id.size() - 4);
@@ -657,15 +860,76 @@ static std::vector<RouteStep> resolveRoute(const RoadGraph& rg, const ChGraph& c
     return steps;
 }
 
+// Nearest RoadGraph node with at least one outgoing edge (a real routable
+// point, not e.g. a lone building-corner node with no road attached) to a
+// clicked map point - used to turn an emergency-dispatch click's world x/y
+// (see handleCommand's triggerEmergency) into a real start/end node for
+// resolveRoute. Plain linear scan over this map's ~15k nodes: only ever
+// called on a manual dispatch click, not a per-tick hot path, so no spatial
+// index is worth the complexity.
+static std::string nearestRoutableNodeId(const RoadGraph& rg, double x, double y) {
+    int best = -1;
+    double bestD2 = 1e30;
+    for (size_t i = 0; i < rg.nodeId.size(); ++i) {
+        if (rg.outAdj[i].empty()) continue;
+        double dx = rg.nodeX[i] - x, dy = rg.nodeY[i] - y;
+        double d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    return best >= 0 ? rg.nodeId[best] : std::string();
+}
+
+// Which of an edge's (at most 2, see simLaneCount) simulated lanes a vehicle
+// should use while travelling it, chosen by peeking at the movement of the
+// junction it leads to: lane 0 (the outer/curb lane in this left-hand-
+// traffic map) carries "through" - straight and the non-crossing left turn,
+// which classifyMovement bundles into "through" - while lane 1 (inner,
+// nearer the road's centreline) carries "right" and "uturn", the two
+// movements that cross oncoming traffic. This is what lets a u-turning
+// vehicle queue without blocking a following through vehicle on a 2-lane
+// approach (see the arbitration step's concurrent-movement check) and lets
+// the two lanes render/queue side-by-side at independent speeds instead of
+// single-file. Single-lane edges always use lane 0 - nothing to choose
+// between.
+//
+// Looks ahead past stepIdx through every remaining CONSECUTIVE chain-edge
+// step of the same road segment/approach (a way with intermediate shape
+// nodes becomes several short chain edges in a row before the junction edge
+// that actually crosses the intersection - see the file header's RoadGraph
+// topology note) to find the junction that ends it, rather than only ever
+// peeking one step ahead. Peeking only one step used to mean a vehicle only
+// discovered it needed the crossing lane once it was already on that final,
+// short pulled-back stub right at the junction - a real driver picks the
+// correct lane for their turn from the START of the approach, well before
+// reaching the intersection, not in the last couple of metres. A route that
+// ends mid-way through this segment (its destination) has no junction to
+// prepare for, so it's left in lane 0 like a plain through movement.
+static int desiredLaneForStep(const RoadGraph& rg, const std::vector<RouteStep>& route, size_t stepIdx) {
+    if (stepIdx >= route.size() || route[stepIdx].isJunction) return 0;
+    const ChainEdge& ce = rg.chainEdges[route[stepIdx].edgeIndex];
+    if (simLaneCount(ce) < 2) return 0;
+    size_t k = stepIdx + 1;
+    while (k < route.size() && !route[k].isJunction) ++k;
+    if (k >= route.size()) return 0;
+    const std::string& movement = rg.junctionEdges[route[k].edgeIndex].movement;
+    return movement == "through" ? 0 : 1;
+}
+
 struct TypeProfile { double aMax, bComfort, headwayT, minGap; };
 
+// Deliberately tighter than a textbook-cautious IDM parameter set (real
+// driving-model papers commonly use headwayT ~1.5-2.0s, minGap ~2-3m) - the
+// project asked for "a bit selfish" drivers that don't yield more than they
+// have to, specifically so congestion that shows up ANYWAY (despite this
+// tighter following) is a stronger signal that a location genuinely needs a
+// traffic light rather than just needing more cautious simulated drivers.
 static const TypeProfile& profileFor(const std::string& type) {
     static const std::unordered_map<std::string, TypeProfile> table = {
-        {"car", {2.5, 3.0, 1.4, 2.0}},
-        {"motorcycle", {3.5, 3.5, 1.0, 1.5}},
-        {"bus", {1.2, 2.0, 1.8, 3.0}},
-        {"truck", {1.0, 2.0, 1.8, 3.0}},
-        {"ambulance", {3.0, 3.5, 1.2, 2.0}},
+        {"car", {2.8, 3.0, 1.0, 1.5}},
+        {"motorcycle", {4.0, 3.5, 0.7, 1.0}},
+        {"bus", {1.4, 2.0, 1.5, 2.5}},
+        {"truck", {1.2, 2.0, 1.5, 2.5}},
+        {"ambulance", {3.2, 3.5, 0.9, 1.5}},
     };
     auto it = table.find(type);
     return it != table.end() ? it->second : table.at("car");
@@ -674,7 +938,12 @@ static const TypeProfile& profileFor(const std::string& type) {
 struct TripSpec {
     int id;
     std::string vehicleType, startNodeId, endNodeId;
-    double length, maxSpeedKmh;
+    double length, width, maxSpeedKmh, accelMps2;
+    // Present only for the frontend's click-a-vehicle-to-inspect detail
+    // panel (see buildVehicleInfoJson) - never consumed by the physics/
+    // routing here, so no default beyond "field absent" matters.
+    double height = -1.0, weightKg = -1.0, driverAge = -1.0, responseTimeSec = -1.0;
+    std::string homeAmenityId, homeHospitalName; // empty = not an ambulance / no depot assigned
 };
 
 static std::vector<TripSpec> loadTrips(const JsonValue& root) {
@@ -689,19 +958,38 @@ static std::vector<TripSpec> loadTrips(const JsonValue& root) {
         t.startNodeId = v.str("startNodeId").value_or("");
         t.endNodeId = v.str("endNodeId").value_or("");
         t.length = v.num("length").value_or(4.5);
+        t.width = v.num("width").value_or(1.8);
         t.maxSpeedKmh = v.num("maxSpeedKmh").value_or(140.0);
+        t.accelMps2 = v.num("accelMps2").value_or(-1.0); // -1 = not present, fall back to profileFor's type default
+        t.height = v.num("height").value_or(-1.0);
+        t.weightKg = v.num("weightKg").value_or(-1.0);
+        t.driverAge = v.num("driverAge").value_or(-1.0);
+        t.responseTimeSec = v.num("responseTimeSec").value_or(-1.0);
+        t.homeAmenityId = v.str("homeAmenityId").value_or("");
+        t.homeHospitalName = v.str("homeHospitalName").value_or("");
         out.push_back(std::move(t));
     }
     return out;
 }
 
+// A vehicle wider than this can't meaningfully share a 2-lane road side by
+// side with another vehicle - it (and anyone considering a lane change
+// beside it) should treat it as occupying the full road, not just one lane.
+// Driven by the vehicle's own generated width (see generate_vehicles.py),
+// not a hardcoded vehicleType list, so it falls directly out of each
+// vehicle's actual hitbox rather than a separate parallel rule.
+static constexpr double WIDE_VEHICLE_THRESHOLD_M = 2.15;
+static bool isWideVehicle(double width) { return width > WIDE_VEHICLE_THRESHOLD_M; }
+
 struct Vehicle {
     int id = -1;
     std::string vehicleType;
-    double length = 4.5, maxSpeedMps = 38.9;
+    double length = 4.5, width = 1.8, maxSpeedMps = 38.9;
     double aMax = 2.5, bComfort = 3.0, headwayT = 1.4, minGap = 2.0;
     std::vector<RouteStep> route;
     size_t routeIdx = 0;
+    int lane = 0; // which of the current chain edge's (at most 2) lanes - see desiredLaneForStep
+    double nextLaneEvalAt = 0.0; // throttles discretionary lane-change checks - see the main loop's step 1.5
     double distAlongEdge = 0.0;
     double speed = 0.0;
     double accel = 0.0;
@@ -710,9 +998,128 @@ struct Vehicle {
     double waitTimeSec = 0.0;
     double arrivalAtStopLineTime = -1.0;
     int gate = 0; // 0 = n/a this tick, 1 = open, 2 = closed - only meaningful for an edge-group's front vehicle
+
+    // Emergency dispatch (manual "emergency state" toggle - see handleCommand's
+    // triggerEmergency) - independent of vehicleType=="ambulance" alone, per
+    // the "currently responding" flag the project's own status notes called
+    // for: a plain ambulance trip does NOT get preemption, only one actually
+    // dispatched to an incident does. emergencyPhase: 0 = not responding,
+    // 1 = en route to the incident, 2 = incident reached, en route to the
+    // home hospital - see the main loop's edge-transition step for how a
+    // vehicle moves from phase 1 to 2 instead of just ending its trip.
+    bool emergency = false;
+    int emergencyPhase = 0;
+    double dispatchTime = -1.0, incidentArrivalTime = -1.0;
+    std::string homeAmenityId; // copied from TripSpec at spawn - hospital lookup for the phase 1->2 handoff
+
+    // Density mode's "waiting for the light" state (see the main loop's step
+    // 3) - a vehicle showing a red dot in the frontend, and the basis of that
+    // mode's approach-weight ranking. Not meaningful outside Density mode.
+    bool waitingLight = false;
+    double waitStartTime = -1.0;
 };
 
-static uint64_t edgeKey(const RouteStep& s) { return ((uint64_t)(s.isJunction ? 1 : 0) << 32) | (uint32_t)s.edgeIndex; }
+// Junction-edge groups ignore lane (vehicles aren't lane-differentiated once
+// inside the junction box - see desiredLaneForStep's own doc comment), so
+// `lane` is masked out whenever s.isJunction; the default lane=0 keeps every
+// pre-existing junction-edge lookup site compiling unchanged.
+static uint64_t edgeKey(const RouteStep& s, int lane = 0) {
+    uint64_t l = s.isJunction ? 0 : (uint32_t)std::max(0, lane);
+    return ((uint64_t)(s.isJunction ? 1 : 0) << 40) | (l << 32) | (uint32_t)s.edgeIndex;
+}
+
+// ---------------------------------------------------------------------------
+// Discretionary lane changing (overtaking) - a chain edge with 2 simulated
+// lanes is no longer a one-way commitment made once at edge entry
+// (desiredLaneForStep still decides the lane REQUIRED to make the upcoming
+// turn, but a vehicle may now drift into the other lane mid-edge to get
+// around a slower leader, then merge back in time for its turn). Run once
+// per tick, before grouping (see the main loop's step 1.5), on a small
+// sorted-by-position list built per chain edge - this is deliberately plain
+// O(n) neighbour scans rather than a maintained sorted structure, since even
+// a busy 2-lane edge only ever holds a small number of vehicles at once.
+// ---------------------------------------------------------------------------
+
+struct LaneNeighbors { int aheadVi = -1, behindVi = -1; };
+
+// Nearest vehicle ahead/behind `pos` in `lane`, among `sortedIdxs` (a chain
+// edge's vehicles, any lane, sorted by distAlongEdge - see byChainEdge in
+// the main loop). `selfVi` is excluded (a vehicle is never its own neighbour).
+static LaneNeighbors findLaneNeighbors(const std::vector<int>& sortedIdxs, const std::vector<Vehicle>& vehicles,
+                                        int lane, double pos, int selfVi) {
+    LaneNeighbors out;
+    double bestAheadPos = 1e18, bestBehindPos = -1e18;
+    for (int vi : sortedIdxs) {
+        if (vi == selfVi) continue;
+        const Vehicle& o = vehicles[vi];
+        if (o.lane != lane) continue;
+        if (o.distAlongEdge >= pos) { if (o.distAlongEdge < bestAheadPos) { bestAheadPos = o.distAlongEdge; out.aheadVi = vi; } }
+        else { if (o.distAlongEdge > bestBehindPos) { bestBehindPos = o.distAlongEdge; out.behindVi = vi; } }
+    }
+    return out;
+}
+
+// Selfish/assertive gap thresholds - deliberately tighter than a textbook
+// lane-change model (which commonly wants 15-20m+ of clearance), per the
+// same "a bit selfish" brief as profileFor. Merging back for a REQUIRED turn
+// uses a smaller threshold still - a real driver noses in more insistently
+// when they're about to miss their turn than when casually overtaking.
+static constexpr double LANE_CHANGE_GAP_AHEAD_M = 5.0;
+static constexpr double LANE_CHANGE_GAP_BEHIND_M = 6.0;
+static constexpr double MERGE_BACK_GAP_AHEAD_M = 3.0;
+static constexpr double MERGE_BACK_GAP_BEHIND_M = 4.0;
+// A wide vehicle (see isWideVehicle) occupying the target lane needs
+// proportionally more clearance to pull alongside - it can't be squeezed
+// against as tightly as a car-sized gap would allow.
+static constexpr double WIDE_NEIGHBOR_GAP_SCALE = 1.5;
+
+static bool laneChangeSafe(const std::vector<int>& sortedIdxs, const std::vector<Vehicle>& vehicles,
+                            const Vehicle& v, int selfVi, int targetLane, double gapAhead, double gapBehind) {
+    LaneNeighbors n = findLaneNeighbors(sortedIdxs, vehicles, targetLane, v.distAlongEdge, selfVi);
+    if (n.aheadVi >= 0) {
+        const Vehicle& a = vehicles[n.aheadVi];
+        double scale = isWideVehicle(a.width) ? WIDE_NEIGHBOR_GAP_SCALE : 1.0;
+        if (a.distAlongEdge - a.length - v.distAlongEdge < gapAhead * scale) return false;
+    }
+    if (n.behindVi >= 0) {
+        const Vehicle& b = vehicles[n.behindVi];
+        double scale = isWideVehicle(b.width) ? WIDE_NEIGHBOR_GAP_SCALE : 1.0;
+        if (v.distAlongEdge - v.length - b.distAlongEdge < gapBehind * scale) return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Optional "vision + mini-pathfinding" lane-choice mode (toggleable - see
+// --advanced-lane-ai / the {"cmd":"setAdvancedLaneAI"} command, off by
+// default). The default heuristic above only reacts to the immediate
+// leader; this instead scores each candidate lane by summing up the
+// slowdown every vehicle within VISION_RANGE_M ahead would impose, weighted
+// by how close it is - a small stand-in for a real perception+planning
+// stack, deliberately not a full graph search (this is a 2-lane choice, not
+// a routing problem) but a genuine look-ahead rather than a single-neighbour
+// reaction. Costs more per vehicle per tick than the default heuristic
+// (scans every same-edge vehicle instead of just the nearest one), which is
+// exactly why it's opt-in rather than replacing the default outright.
+// ---------------------------------------------------------------------------
+
+static constexpr double VISION_RANGE_M = 50.0;
+
+static double laneVisionCost(const std::vector<int>& sortedIdxs, const std::vector<Vehicle>& vehicles,
+                              int lane, double pos, double desiredSpeed, int selfVi) {
+    double cost = 0.0;
+    for (int vi : sortedIdxs) {
+        if (vi == selfVi) continue;
+        const Vehicle& o = vehicles[vi];
+        if (o.lane != lane) continue;
+        double d = o.distAlongEdge - pos;
+        if (d < -o.length || d > VISION_RANGE_M) continue; // behind me, or beyond my vision range
+        double slowdown = std::max(0.0, desiredSpeed - o.speed);
+        double proximityWeight = std::max(0.0, (VISION_RANGE_M - std::max(0.0, d)) / VISION_RANGE_M);
+        cost += slowdown * proximityWeight;
+    }
+    return cost;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal WebSocket server (RFC 6455), hand-rolled with plain Winsock -
@@ -814,6 +1221,15 @@ struct WsClient {
     bool handshakeDone = false;
     bool closed = false;
 };
+
+// Unicast reply to a single client's own request (e.g. getRoute, see
+// handleCommand) - broadcast() below is for the shared per-tick snapshot,
+// this is for a one-off response only that one client asked for.
+static void wsSendText(WsClient& c, const std::string& payload) {
+    if (c.closed || !c.handshakeDone) return;
+    std::string frame = encodeWsFrame(0x1, payload);
+    send(c.sock, frame.data(), (int)frame.size(), 0);
+}
 
 // Consumes header bytes from c.recvBuf up through "\r\n\r\n" once the full
 // HTTP upgrade request has arrived (tolerates it arriving across multiple
@@ -931,7 +1347,7 @@ public:
     // client, advances handshakes, and dispatches complete text messages to
     // onCommand. Non-blocking throughout - safe to call once per simulation
     // tick without ever stalling the physics loop on network I/O.
-    void pump(const std::function<void(const std::string&)>& onCommand) {
+    void pump(const std::function<void(const std::string&, WsClient&)>& onCommand) {
         while (true) {
             SOCKET s = accept(listenSock_, nullptr, nullptr);
             if (s == INVALID_SOCKET) break;
@@ -958,7 +1374,7 @@ public:
             std::string text; bool shouldClose;
             while (tryReadWsFrame(c, text, shouldClose)) {
                 if (shouldClose) { c.closed = true; break; }
-                if (!text.empty()) { onCommand(text); text.clear(); }
+                if (!text.empty()) { onCommand(text, c); text.clear(); }
             }
         }
 
@@ -988,12 +1404,90 @@ private:
     std::vector<std::unique_ptr<WsClient>> clients_;
 };
 
+static void appendJsonString(std::string& out, const std::string& s) {
+    out += '"';
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if ((unsigned char)c < 0x20) { char buf[8]; snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf; }
+                else out += c;
+        }
+    }
+    out += '"';
+}
+
+// Whether two unsignalized-junction (or, under EmergencyOnly/Density mode, a
+// signalized junction's own arbitration - see SignalMode) candidate
+// movements can occupy the junction at the same time - see the main loop's
+// step 3 for the full reasoning. Hoisted to a free function so buildStateJson
+// can reuse the exact same rule to report live lamp colors under those two
+// modes, rather than keeping a second copy in sync by hand.
+//
+// NOTE (kept as history so this mistake doesn't get re-made): an earlier
+// version of this function replaced the rules below with a general
+// arrival/departure "chord crossing" geometric test, meant to handle
+// irregular junction shapes better than a fixed 4-way assumption. It was
+// wrong - hand-verifying it against the single most important conflict case
+// (an approach's protected right/crossing turn against the OPPOSITE
+// approach's through traffic, the textbook reason protected-turn phases
+// exist at all) showed it incorrectly called that pairing safe. A chord
+// between two arm positions is not a faithful model of a real curved
+// turning path, and this is exactly the kind of function where "elegant but
+// unverified" is worse than "conservative and standard" - so this reverts
+// to the established traffic-engineering rule set below, which every case
+// was hand-checked against instead of just one.
+//   - Same approach, different lane: always compatible (the established
+//     assumption that a right/u-turning vehicle peels away from its own
+//     approach's through lane before their paths would otherwise meet).
+//   - Opposite approaches (arrival directions within ~135-180° of each
+//     other) both going "through" (straight, or this map's left-hand-
+//     traffic non-crossing turn - see classifyMovement): their paths run
+//     parallel down the middle of the junction and never cross, and by
+//     definition arrive at DIFFERENT (opposite) exit arms.
+//   - Opposite approaches BOTH turning "right" (the crossing turn in this
+//     left-hand-traffic map) AND departing onto DIFFERENT ways: at a clean
+//     4-way cross this is automatically true and each arcs to the far side
+//     away from the other, like a real dual-protected-turn phase; the
+//     explicit different-destination check is what keeps this safe at an
+//     irregular/5+-arm junction too, where two "opposite-ish" approaches
+//     turning the same way could otherwise converge onto the same arm - a
+//     real collision risk caught by inspection in this map's own busiest
+//     signalized junction, which has more physical arms than a plain cross.
+//   - Anything else - u-turns, or ANY mix of "through" and "right" across
+//     different approaches (opposite or not) - always serializes. A
+//     crossing turn from one approach always conflicts with through traffic
+//     from the opposite approach; that's the textbook justification for a
+//     protected right/left-turn phase existing in the first place.
+static bool movementsCompatible(const std::string& fromA, const std::string& moveA, double axA, double ayA,
+                                 const std::string& toWayA, const std::string& fromB, const std::string& moveB,
+                                 double axB, double ayB, const std::string& toWayB) {
+    if (fromA == fromB) return true;
+    if (moveA != moveB) return false;
+    double dot = axA * axB + ayA * ayB;
+    if (dot >= -0.7) return false;
+    if (moveA == "through") return true;
+    if (moveA == "right") return toWayA != toWayB;
+    return false; // uturn (or anything else) never compatible across approaches
+}
+
+struct TypeStats { long long count = 0; double sumTripSec = 0; };
+struct EmergencyStats { long long count = 0; double sumResponseSec = 0, sumTransportSec = 0; };
+
 // Compact JSON build (hand-rolled, matching ch_preprocess.cpp/ch_query.cpp's
 // own approach - no library) for the per-tick broadcast. vehicleType is
 // always one of this project's own small fixed set (never externally
 // supplied), so no escaping is needed for it.
 static std::string buildStateJson(double simClock, const std::vector<Vehicle>& vehicles, const RoadGraph& rg,
-                                   long long totalSpawned, long long totalCompleted, size_t totalTrips) {
+                                   long long totalSpawned, long long totalCompleted, size_t totalTrips, SignalMode signalMode,
+                                   const std::unordered_map<int, std::string>& emergencyPreemptApproach,
+                                   const std::unordered_map<std::string, double>& densityApproachWeight,
+                                   const std::unordered_map<std::string, TypeStats>& completedByType,
+                                   const EmergencyStats& emergencyStats) {
     std::string out;
     out.reserve(vehicles.size() * 72 + 128);
     char buf[64];
@@ -1005,6 +1499,116 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
     out += ",\"spawned\":"; out += std::to_string(totalSpawned);
     out += ",\"completed\":"; out += std::to_string(totalCompleted);
     out += ",\"total\":"; out += std::to_string(totalTrips);
+    out += ",\"mode\":\""; out += signalModeToString(signalMode); out += "\"";
+    // Under EmergencyOnly/Density mode a signalized junction's lamp colors
+    // are decided live, server-side (see the main loop's step 3 and
+    // SignalMode's own comment), not the fixed-time math front-end/
+    // redlight.js runs locally from the clock alone - so those colors have
+    // to be streamed explicitly here for the client to render correctly (see
+    // sim-client.js's handling of this field). Only ever non-empty for this
+    // map's 3 signalized junctions.
+    //   - EmergencyOnly mode with no ambulance currently preempting a given
+    //     junction is deliberately SKIPPED here entirely (not just "colored
+    //     the same as default") - that junction is left out of this array so
+    //     the client falls back to its own ordinary fixed-time computation
+    //     (same math, kept in lockstep via Sim.clockSec - see sim-client.js),
+    //     which is what lets it show a genuine countdown timer rather than a
+    //     frozen "0". Only emitted once an ambulance is actually preempting.
+    //   - Density mode always emits every signalized junction (it has no
+    //     fixed-time fallback to defer to).
+    //   - Either mode, once emergencyPreemptApproach names a junction (see
+    //     the main loop's step 3 - a vehicle with emergency==true at the
+    //     front of its approach queue), that approach's own color is forced
+    //     green and every other approach forced red, overriding the mode's
+    //     ordinary logic - real preemption, not just a priority nudge.
+    if (signalMode != SignalMode::Default) {
+        out += ",\"lamps\":[";
+        bool firstLamp = true;
+        for (size_t ji = 0; ji < rg.junctions.size(); ++ji) {
+            const JunctionInfo& jn = rg.junctions[ji];
+            if (!jn.signal.present) continue;
+            auto preemptIt = emergencyPreemptApproach.find((int)ji);
+            bool preempting = preemptIt != emergencyPreemptApproach.end();
+            if (signalMode == SignalMode::EmergencyOnly && !preempting) continue;
+            std::unordered_set<std::string> seen;
+            for (const JunctionEdge& je : rg.junctionEdges) {
+                if (je.junctionIdx != (int)ji) continue;
+                std::string key = je.fromWayId + "|" + je.movement;
+                if (!seen.insert(key).second) continue;
+                bool green;
+                const char* reason;
+                if (preempting) {
+                    green = je.fromWayId == preemptIt->second;
+                    reason = "emergency";
+                } else {
+                    green = true;
+                    for (auto& f : jn.inFlight) {
+                        if (!movementsCompatible(je.fromWayId, je.movement, je.arrDirX, je.arrDirY, je.toWayId,
+                                                  f.fromWayId, f.movement, f.arrDirX, f.arrDirY, f.toWayId)) { green = false; break; }
+                    }
+                    reason = "density";
+                }
+                if (!firstLamp) out += ",";
+                firstLamp = false;
+                out += "{\"nodeId\":"; appendJsonString(out, rg.nodeId[jn.primaryNodeIdx]);
+                out += ",\"wayId\":"; appendJsonString(out, je.fromWayId);
+                out += ",\"movement\":"; appendJsonString(out, je.movement);
+                out += ",\"color\":\""; out += (green ? "green" : "red"); out += "\"";
+                out += ",\"r\":\""; out += reason; out += "\"}";
+            }
+        }
+        out += "]";
+    }
+    // Density mode's live per-approach "red dot" weight (see the main loop's
+    // step 3 and Vehicle::waitingLight) - streamed unkeyed by movement (one
+    // entry per fromWayId, not per lamp) purely for display: the frontend's
+    // node inspector shows this when a signalized junction is selected, so a
+    // user can see WHY a given approach is winning (or not) under Density
+    // mode. Only ever non-empty in Density mode; harmless/empty otherwise.
+    if (signalMode == SignalMode::Density) {
+        out += ",\"approachWeights\":[";
+        bool firstW = true;
+        for (size_t ji = 0; ji < rg.junctions.size(); ++ji) {
+            const JunctionInfo& jn = rg.junctions[ji];
+            if (!jn.signal.present) continue;
+            std::unordered_set<std::string> seenWay;
+            for (const JunctionEdge& je : rg.junctionEdges) {
+                if (je.junctionIdx != (int)ji) continue;
+                if (!seenWay.insert(je.fromWayId).second) continue;
+                auto it = densityApproachWeight.find(std::to_string(ji) + "|" + je.fromWayId);
+                double w = it != densityApproachWeight.end() ? it->second : 0.0;
+                if (!firstW) out += ",";
+                firstW = false;
+                out += "{\"nodeId\":"; appendJsonString(out, rg.nodeId[jn.primaryNodeIdx]);
+                out += ",\"wayId\":"; appendJsonString(out, je.fromWayId);
+                out += ",\"weight\":"; appendNum(w, 1);
+                out += "}";
+            }
+        }
+        out += "]";
+    }
+    out += ",\"stats\":{";
+    {
+        long long allCount = 0; double allSum = 0;
+        for (auto& [ty, ts] : completedByType) { allCount += ts.count; allSum += ts.sumTripSec; }
+        out += "\"completedTotal\":"; out += std::to_string(allCount);
+        out += ",\"avgTripSec\":"; appendNum(allCount ? allSum / allCount : 0.0, 1);
+        out += ",\"byType\":{";
+        bool firstTy = true;
+        for (auto& [ty, ts] : completedByType) {
+            if (!firstTy) out += ",";
+            firstTy = false;
+            out += "\""; out += ty; out += "\":{\"count\":"; out += std::to_string(ts.count);
+            out += ",\"avgTripSec\":"; appendNum(ts.count ? ts.sumTripSec / ts.count : 0.0, 1);
+            out += "}";
+        }
+        out += "}";
+        out += ",\"emergency\":{\"count\":"; out += std::to_string(emergencyStats.count);
+        out += ",\"avgResponseSec\":"; appendNum(emergencyStats.count ? emergencyStats.sumResponseSec / emergencyStats.count : 0.0, 1);
+        out += ",\"avgTransportSec\":"; appendNum(emergencyStats.count ? emergencyStats.sumTransportSec / emergencyStats.count : 0.0, 1);
+        out += "}";
+    }
+    out += "}";
     out += ",\"vehicles\":[";
     bool first = true;
     for (auto& v : vehicles) {
@@ -1016,6 +1620,63 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
         double t = cur.length > 1e-6 ? std::max(0.0, std::min(1.0, v.distAlongEdge / cur.length)) : 0.0;
         double x = fx + (tx - fx) * t, y = fy + (ty - fy) * t;
         double heading = std::atan2(ty - fy, tx - fx);
+
+        // Curved turning path: a junction edge connects two DIFFERENT
+        // approach nodes with a straight line, which is geometrically
+        // correct for routing/distance but renders as an instant snap from
+        // the arrival heading to the departure heading, right at the
+        // junction - real vehicles sweep through a turn radius instead.
+        // This bends the RENDERED path (never the physics - distAlongEdge/t
+        // above is untouched) into a quadratic Bezier whose tangents match
+        // the real arrival/departure directions (JunctionEdge::arrDir/
+        // depDir, from the SAME classifyMovement geometry, not guessed):
+        // the control point is where those two tangent lines actually
+        // cross. A "through" movement's arrival/departure directions are
+        // nearly identical, so that crossing point is degenerate/far away -
+        // caught by the determinant/sanity checks below, which simply skip
+        // curving and keep the straight line (correct - there's no visible
+        // turn to smooth there anyway).
+        if (cur.isJunction) {
+            const JunctionEdge& je = rg.junctionEdges[cur.edgeIndex];
+            double dx = tx - fx, dy = ty - fy;
+            double det = je.arrDirX * je.depDirY - je.arrDirY * je.depDirX;
+            if (std::fabs(det) > 1e-6) {
+                double s = (dx * je.depDirY - dy * je.depDirX) / det;
+                double maxS = std::max(1.0, cur.length * 3.0);
+                if (s > 0.05 && s < maxS) {
+                    double p1x = fx + je.arrDirX * s, p1y = fy + je.arrDirY * s;
+                    double omt = 1.0 - t;
+                    x = omt * omt * fx + 2 * omt * t * p1x + t * t * tx;
+                    y = omt * omt * fy + 2 * omt * t * p1y + t * t * ty;
+                    double tanX = 2 * omt * (p1x - fx) + 2 * t * (tx - p1x);
+                    double tanY = 2 * omt * (p1y - fy) + 2 * t * (ty - p1y);
+                    if (std::hypot(tanX, tanY) > 1e-6) heading = std::atan2(tanY, tanX);
+                }
+            }
+        }
+
+        // Lateral offset from the raw edge (its node-chain, which on a
+        // two-way road runs down the geometric centreline - see
+        // ChainEdge::carriagewayCenterOffsetM) to where this vehicle should
+        // actually sit: its own carriageway's side, then centred in
+        // whichever of that carriageway's (at most 2) simulated lanes it's
+        // using. Junction edges are left at 0 (raw centreline between the
+        // two specific approach nodes) - see that field's own comment for
+        // why. Sent as a real metre offset, LEFT-of-heading positive
+        // (matching this map's left-hand-traffic convention elsewhere -
+        // see routetest.js's routeWorldLeftNormal), rather than baked
+        // straight into x/y, so the frontend can ease a sudden lane-change
+        // (the engine flips v.lane in one tick) into a smooth visual
+        // transition instead of a sideways teleport, without that easing
+        // also smearing out genuine forward motion.
+        double lateralOffsetM = 0.0;
+        if (!cur.isJunction) {
+            const ChainEdge& ce = rg.chainEdges[cur.edgeIndex];
+            int n = simLaneCount(ce);
+            int laneIdx = std::min(v.lane, n - 1);
+            lateralOffsetM = ce.carriagewayCenterOffsetM + ((n - 1) / 2.0 - laneIdx) * ce.laneWidthM;
+        }
+
         if (!first) out += ",";
         first = false;
         out += "{\"id\":"; out += std::to_string(v.id);
@@ -1023,17 +1684,98 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
         out += ",\"y\":"; appendNum(y, 2);
         out += ",\"h\":"; appendNum(heading, 3);
         out += ",\"s\":"; appendNum(v.speed * 3.6, 1);
-        out += ",\"ty\":\""; out += v.vehicleType; out += "\"}";
+        out += ",\"o\":"; appendNum(lateralOffsetM, 2);
+        out += ",\"l\":"; appendNum(v.length, 1);
+        out += ",\"w\":"; appendNum(v.width, 1);
+        out += ",\"ty\":\""; out += v.vehicleType; out += "\"";
+        // "Waiting for the light" red dot (Density mode only - see the main
+        // loop's step 3) - omitted rather than sent as 0 for every other
+        // vehicle, matching this function's existing sparse-field convention.
+        if (v.waitingLight) out += ",\"wt\":1";
+        if (v.emergency) out += ",\"em\":1";
+        out += "}";
     }
     out += "]}";
     return out;
 }
 
-// Control messages from the frontend - only setSpeed/stop do anything in
-// this phase; setMode/triggerEmergency are parsed and acknowledged (so a
-// forward-compatible client doesn't get an error) but have no effect until
-// Phase 4/5 add the modes/emergency system they belong to.
-static void handleCommand(const std::string& text, double& speedMultiplier, bool& stopRequested) {
+// Response to a {"cmd":"getRoute","id":N} request (see handleCommand) - the
+// vehicle's full planned route as a polyline of real map coordinates, for
+// the frontend's click-a-vehicle-to-see-its-path feature. Routes are
+// computed once at spawn and never change (this project's own routing
+// requirement), so this is just a read of already-resolved state, not a
+// fresh query. `v` null (vehicle not found, or finished/not active) yields
+// an empty points array rather than an error - the client treats that as
+// "nothing to draw", not a failure.
+static std::string buildRouteJson(int id, const Vehicle* v, const RoadGraph& rg) {
+    std::string out;
+    char buf[64];
+    auto appendNum = [&](double val) { snprintf(buf, sizeof(buf), "%.2f", val); out += buf; };
+    out += "{\"type\":\"route\",\"id\":"; out += std::to_string(id); out += ",\"points\":[";
+    if (v) {
+        bool first = true;
+        auto emit = [&](int nodeIdx) {
+            if (!first) out += ",";
+            first = false;
+            out += "["; appendNum(rg.nodeX[nodeIdx]); out += ","; appendNum(rg.nodeY[nodeIdx]); out += "]";
+        };
+        for (const RouteStep& s : v->route) {
+            emit(s.isJunction ? rg.junctionEdges[s.edgeIndex].from : rg.chainEdges[s.edgeIndex].from);
+        }
+        if (!v->route.empty()) {
+            const RouteStep& last = v->route.back();
+            emit(last.isJunction ? rg.junctionEdges[last.edgeIndex].to : rg.chainEdges[last.edgeIndex].to);
+        }
+    }
+    out += "]}";
+    return out;
+}
+
+// Response to a {"cmd":"getVehicleInfo","id":N} request - the vehicle's full
+// generated tag set (see generate_vehicles.py's per-vehicle record) for the
+// frontend's click-to-inspect detail panel. These are all static, decided
+// once at generation time, so a plain read of the already-loaded TripSpec is
+// enough - no need to touch the live Vehicle state (the per-tick broadcast
+// already carries that: x/y/h/s/o/l/w). `t` null (id not found) yields a
+// bare object with just the id, matching buildRouteJson's "missing means
+// empty, not an error" convention.
+static std::string buildVehicleInfoJson(int id, const TripSpec* t) {
+    std::string out;
+    char buf[64];
+    auto appendNum = [&](double val, int decimals) { snprintf(buf, sizeof(buf), "%.*f", decimals, val); out += buf; };
+    out += "{\"type\":\"vehicleInfo\",\"id\":"; out += std::to_string(id);
+    if (t) {
+        out += ",\"vehicleType\":"; appendJsonString(out, t->vehicleType);
+        out += ",\"startNodeId\":"; appendJsonString(out, t->startNodeId);
+        out += ",\"endNodeId\":"; appendJsonString(out, t->endNodeId);
+        out += ",\"length\":"; appendNum(t->length, 2);
+        out += ",\"width\":"; appendNum(t->width, 2);
+        if (t->height > 0) { out += ",\"height\":"; appendNum(t->height, 2); }
+        if (t->weightKg > 0) { out += ",\"weightKg\":"; appendNum(t->weightKg, 0); }
+        out += ",\"maxSpeedKmh\":"; appendNum(t->maxSpeedKmh, 1);
+        if (t->accelMps2 > 0) { out += ",\"accelMps2\":"; appendNum(t->accelMps2, 2); }
+        if (t->driverAge > 0) { out += ",\"driverAge\":"; appendNum(t->driverAge, 0); }
+        if (t->responseTimeSec > 0) { out += ",\"responseTimeSec\":"; appendNum(t->responseTimeSec, 2); }
+        if (!t->homeAmenityId.empty()) { out += ",\"homeAmenityId\":"; appendJsonString(out, t->homeAmenityId); }
+        if (!t->homeHospitalName.empty()) { out += ",\"homeHospitalName\":"; appendJsonString(out, t->homeHospitalName); }
+    }
+    out += "}";
+    return out;
+}
+
+// Control messages from the frontend - setSpeed/stop/getRoute/getVehicleInfo/
+// setAdvancedLaneAI/setSignalMode/triggerEmergency all do something now.
+// triggerEmergency dispatches an already-active ambulance to a clicked map
+// point: it splices a freshly-resolved route from the vehicle's current
+// position on to the incident node (see stepToNode/resolveRoute), flags it
+// emergency (which EmergencyOnly/Density mode's junction preemption keys off
+// - see the main loop's step 3), and records dispatchTime so the eventual
+// incident/hospital arrivals can report response/transport times (see the
+// edge-transition step and buildStateJson's "stats" field).
+static void handleCommand(const std::string& text, WsClient& fromClient, double& speedMultiplier, bool& stopRequested,
+                           bool& advancedLaneAI, SignalMode& signalMode, std::vector<Vehicle>& vehicles,
+                           const RoadGraph& rg, const ChGraph& chg, const std::vector<TripSpec>& trips,
+                           double simClock) {
     try {
         JsonValue msg = JsonParser(text).parse();
         auto cmd = msg.str("cmd");
@@ -1043,6 +1785,43 @@ static void handleCommand(const std::string& text, double& speedMultiplier, bool
             std::cerr << "[sim] speed set to " << speedMultiplier << "x\n";
         } else if (*cmd == "stop") {
             stopRequested = true;
+        } else if (*cmd == "setAdvancedLaneAI") {
+            const JsonValue* val = msg.find("value");
+            if (val && val->type == JsonValue::Type::Bool) advancedLaneAI = val->boolVal;
+            std::cerr << "[sim] advanced lane AI (vision + mini-pathfinding) " << (advancedLaneAI ? "ON" : "OFF") << "\n";
+        } else if (*cmd == "setSignalMode") {
+            auto val = msg.str("value");
+            if (val) signalMode = signalModeFromString(*val);
+            std::cerr << "[sim] signal-control mode set to " << signalModeToString(signalMode) << "\n";
+        } else if (*cmd == "getRoute") {
+            int id = (int)msg.num("id").value_or(-1);
+            const Vehicle* found = nullptr;
+            for (auto& v : vehicles) if (v.id == id && v.active) { found = &v; break; }
+            wsSendText(fromClient, buildRouteJson(id, found, rg));
+        } else if (*cmd == "getVehicleInfo") {
+            int id = (int)msg.num("id").value_or(-1);
+            const TripSpec* found = nullptr;
+            for (auto& t : trips) if (t.id == id) { found = &t; break; }
+            wsSendText(fromClient, buildVehicleInfoJson(id, found));
+        } else if (*cmd == "triggerEmergency") {
+            int id = (int)msg.num("id").value_or(-1);
+            double x = msg.num("x").value_or(0.0), y = msg.num("y").value_or(0.0);
+            Vehicle* found = nullptr;
+            for (auto& v : vehicles) if (v.id == id && v.active) { found = &v; break; }
+            if (!found) { std::cerr << "[sim] triggerEmergency ignored: vehicle " << id << " not active\n"; return; }
+            if (found->vehicleType != "ambulance") { std::cerr << "[sim] triggerEmergency ignored: vehicle " << id << " is not an ambulance\n"; return; }
+            std::string fromNodeId = rg.nodeId[stepToNode(rg, found->route[found->routeIdx])];
+            std::string incidentNodeId = nearestRoutableNodeId(rg, x, y);
+            std::string err;
+            std::vector<RouteStep> newRoute = resolveRoute(rg, chg, fromNodeId, incidentNodeId, err);
+            if (newRoute.empty()) { std::cerr << "[sim] WARN emergency dispatch route failed for vehicle " << id << ": " << err << "\n"; return; }
+            found->route.resize(found->routeIdx + 1);
+            found->route.insert(found->route.end(), newRoute.begin(), newRoute.end());
+            found->emergency = true;
+            found->emergencyPhase = 1;
+            found->dispatchTime = simClock;
+            found->incidentArrivalTime = -1.0;
+            std::cerr << "[sim] emergency dispatch: vehicle " << id << " -> incident near node " << incidentNodeId << "\n";
         } else {
             std::cerr << "[sim] control message noted (no effect until a later phase): " << text << "\n";
         }
@@ -1055,7 +1834,8 @@ int main(int argc, char** argv) {
     if (argc < 4) {
         std::cerr << "usage: sim_engine <map_data.json> <map_data.ch.bin> <vehicles.json> "
                      "[--sim-seconds N] [--concurrency N] [--ramp-seconds N] [--stats-interval N] "
-                     "[--track-vehicle ID] [--port N] [--speed N] [--headless]\n";
+                     "[--track-vehicle ID] [--port N] [--speed N] [--headless] [--advanced-lane-ai] "
+                     "[--signal-mode default|emergency|density]\n";
         return 2;
     }
     std::string mapPath = argv[1], chPath = argv[2], vehiclesPath = argv[3];
@@ -1063,6 +1843,13 @@ int main(int argc, char** argv) {
     long long concurrency = -1;
     int trackId = -1, port = 8766;
     bool headless = false; // --headless skips the websocket server + real-time pacing (Phase 2's original mode - runs flat out, for scripted testing)
+    // Off by default - see laneVisionCost's own comment for why this costs
+    // more per vehicle per tick than the default heuristic. Toggleable live
+    // via {"cmd":"setAdvancedLaneAI","value":true|false} too (see handleCommand).
+    bool advancedLaneAI = false;
+    // Phase 4 - see SignalMode's own comment. Toggleable live via
+    // {"cmd":"setSignalMode","value":"default"|"emergency"|"density"}.
+    SignalMode signalMode = SignalMode::Default;
     for (int i = 4; i < argc; ++i) {
         std::string a = argv[i];
         auto nextVal = [&](const char* name) -> std::string {
@@ -1077,10 +1864,13 @@ int main(int argc, char** argv) {
         else if (a == "--port") port = std::stoi(nextVal(a.c_str()));
         else if (a == "--speed") speedMultiplier = std::max(0.1, std::min(24.0, std::stod(nextVal(a.c_str()))));
         else if (a == "--headless") headless = true;
+        else if (a == "--advanced-lane-ai") advancedLaneAI = true;
+        else if (a == "--signal-mode") signalMode = signalModeFromString(nextVal(a.c_str()));
         else { std::cerr << "unknown argument: " << a << "\n"; return 2; }
     }
 
     try {
+        TimerResolutionGuard timerGuard;
         auto t0 = Clock::now();
         JsonValue mapRoot = JsonParser(chReadFile(mapPath)).parse();
         RoadGraph rg = buildRoadGraph(mapRoot);
@@ -1093,6 +1883,24 @@ int main(int argc, char** argv) {
         std::vector<TripSpec> trips = loadTrips(vehiclesRoot);
         std::cerr << "[sim] loaded " << trips.size() << " trip specs (setup " << elapsedMs(t0) << " ms)\n";
 
+        // Ambulance depot -> routable node lookup (generate_vehicles.py's own
+        // hospital-snapping, already done once at generation time - see
+        // find_hospital_depots there - persisted into vehicles.json's
+        // meta.depots) so an emergency dispatch's phase 1->2 handoff (see the
+        // main loop's edge-transition step) can route an ambulance on to its
+        // OWN home hospital by amenity id, not just anywhere.
+        std::unordered_map<std::string, std::string> hospitalNodeByAmenityId;
+        if (const JsonValue* metaVal = vehiclesRoot.find("meta")) {
+            if (const JsonValue* depotsArr = metaVal->find("depots")) {
+                if (depotsArr->type == JsonValue::Type::Array) {
+                    for (auto& d : depotsArr->arrVal) {
+                        auto did = d.str("id"), dNode = d.str("nodeId");
+                        if (did && dNode) hospitalNodeByAmenityId[*did] = *dNode;
+                    }
+                }
+            }
+        }
+
         if (concurrency < 0) concurrency = (long long)trips.size();
         concurrency = std::min<long long>(concurrency, (long long)trips.size());
 
@@ -1102,9 +1910,11 @@ int main(int argc, char** argv) {
 
         double simClock = 0.0;
         size_t spawnCursor = 0;
+        std::deque<size_t> spawnRetryQueue; // trip indices blocked by SPAWN_CLEARANCE_M - see the spawn step's own comment
         long long activeCount = 0, totalSpawned = 0, totalCompleted = 0, totalFailedRoute = 0;
         double nextStatsAt = 0.0, nextTrackAt = 0.0;
         bool stopRequested = false;
+        double batchAccum = 0.0; // fractional carry for how many sim ticks to run per broadcast, see step 7's own comment
 
         WsServer server;
         if (!headless) {
@@ -1112,37 +1922,189 @@ int main(int argc, char** argv) {
             std::cerr << "[sim] websocket server listening on ws://127.0.0.1:" << port << "\n";
         }
 
-        struct TypeStats { long long count = 0; double sumTripSec = 0; };
         std::unordered_map<std::string, TypeStats> completedByType;
+        EmergencyStats emergencyStats;
+        // Junctions currently under real emergency preemption this tick
+        // (junctionIdx -> the fromWayId being forced green) - recomputed
+        // fresh each physics tick in step 3, but declared here (outside the
+        // per-tick rep loop) so the last tick's result is still in scope for
+        // step 7's broadcast, which only runs once per OUTER iteration.
+        std::unordered_map<int, std::string> emergencyPreemptApproach;
+        // Density mode's live per-approach "red dot" weight (key
+        // "junctionIdx|fromWayId" - see step 3's own comment for how it's
+        // computed) - same "declared outside the rep loop so the broadcast
+        // can still see it" reasoning as emergencyPreemptApproach above; also
+        // exposed to the frontend (buildStateJson's "approachWeights" field)
+        // for the selected-junction sidebar display.
+        std::unordered_map<std::string, double> densityApproachWeight;
 
-        while (simClock < simSeconds && !stopRequested) {
+        bool allDone = false;
+        while (simClock < simSeconds && !stopRequested && !allDone) {
             auto tickWallStart = Clock::now();
-            if (!headless) server.pump([&](const std::string& text) { handleCommand(text, speedMultiplier, stopRequested); });
+            if (!headless) server.pump([&](const std::string& text, WsClient& fc) { handleCommand(text, fc, speedMultiplier, stopRequested, advancedLaneAI, signalMode, vehicles, rg, chg, trips, simClock); });
+
+            // How many dt=1/20s physics ticks to run before the next
+            // broadcast/sleep (step 7) - see that step's own comment for why
+            // this batches ticks instead of trying to sleep for an
+            // ever-smaller fraction of one tick as speedMultiplier grows.
+            // headless mode (scripted testing, no networking) is untouched:
+            // always exactly 1 tick per outer iteration, same as before.
+            // Live mode accumulates the fractional multiplier (a plain
+            // Bresenham-style carry) so the AVERAGE rate over time matches
+            // speedMultiplier exactly even when it isn't a whole number.
+            int ticksThisIteration = 1;
+            if (!headless) {
+                batchAccum += speedMultiplier;
+                ticksThisIteration = std::max(1, (int)std::floor(batchAccum));
+                batchAccum -= ticksThisIteration;
+            }
+
+            for (int rep = 0; rep < ticksThisIteration && simClock < simSeconds; ++rep) {
 
             // 1. Spawn, paced so a large target concurrency ramps up over
-            // rampSeconds instead of bursting thousands of CH queries into tick 0.
+            // rampSeconds instead of bursting thousands of CH queries into
+            // tick 0. trySpawnIndex refuses to spawn on top of a vehicle
+            // already sitting near the start of the route's first edge/lane
+            // (see SPAWN_CLEARANCE_M) - without that, two trips starting on
+            // the same road could spawn overlapping/collided, since spawning
+            // otherwise never checked for existing traffic. A blocked trip
+            // goes on spawnRetryQueue rather than being dropped or stalling
+            // every OTHER trip this tick - each tick gives every currently-
+            // queued retry exactly one more attempt (the size() snapshot
+            // below bounds that to one pass, so a still-blocked one goes to
+            // the BACK of the queue instead of being retried again
+            // immediately, which would spin forever on a single persistently
+            // busy road instead of moving on to try other trips).
             long long spawnedThisTick = 0;
-            while (activeCount < concurrency && spawnCursor < trips.size() && spawnedThisTick < spawnBudgetPerTick) {
-                const TripSpec& t = trips[spawnCursor];
+            auto trySpawnIndex = [&](size_t idx) -> bool {
+                const TripSpec& t = trips[idx];
                 std::string err;
                 std::vector<RouteStep> route = resolveRoute(rg, chg, t.startNodeId, t.endNodeId, err);
-                totalSpawned++;
                 if (route.empty()) {
+                    totalSpawned++;
                     totalFailedRoute++;
                     std::cerr << "[sim] WARN vehicle " << t.id << " route failed: " << err << "\n";
-                } else {
-                    Vehicle& v = vehicles[spawnCursor];
-                    v.id = t.id; v.vehicleType = t.vehicleType; v.length = t.length;
-                    v.maxSpeedMps = t.maxSpeedKmh / 3.6;
-                    const TypeProfile& prof = profileFor(t.vehicleType);
-                    v.aMax = prof.aMax; v.bComfort = prof.bComfort; v.headwayT = prof.headwayT; v.minGap = prof.minGap;
-                    v.route = std::move(route);
-                    v.routeIdx = 0; v.distAlongEdge = 0; v.speed = 0; v.active = true;
-                    v.spawnSimTime = simClock; v.waitTimeSec = 0; v.arrivalAtStopLineTime = -1;
-                    activeCount++;
+                    return true;
                 }
-                spawnCursor++;
-                spawnedThisTick++;
+                int spawnLane = desiredLaneForStep(rg, route, 0);
+                if (!route[0].isJunction) {
+                    for (auto& ov : vehicles) {
+                        if (!ov.active || ov.route.empty()) continue;
+                        const RouteStep& os = ov.route[ov.routeIdx];
+                        if (os.isJunction || os.edgeIndex != route[0].edgeIndex || ov.lane != spawnLane) continue;
+                        if (ov.distAlongEdge < SPAWN_CLEARANCE_M) return false; // blocked - caller re-queues
+                    }
+                }
+                totalSpawned++;
+                Vehicle& v = vehicles[idx];
+                v.id = t.id; v.vehicleType = t.vehicleType; v.length = t.length; v.width = t.width;
+                v.maxSpeedMps = t.maxSpeedKmh / 3.6;
+                const TypeProfile& prof = profileFor(t.vehicleType);
+                v.aMax = t.accelMps2 > 0 ? t.accelMps2 : prof.aMax; // per-vehicle if generate_vehicles.py provided one, else the type default
+                v.bComfort = prof.bComfort; v.headwayT = prof.headwayT; v.minGap = prof.minGap;
+                v.route = std::move(route);
+                v.routeIdx = 0; v.distAlongEdge = 0; v.speed = 0; v.active = true;
+                v.lane = spawnLane;
+                v.spawnSimTime = simClock; v.waitTimeSec = 0; v.arrivalAtStopLineTime = -1;
+                v.homeAmenityId = t.homeAmenityId;
+                v.emergency = false; v.emergencyPhase = 0; v.dispatchTime = -1; v.incidentArrivalTime = -1;
+                v.waitingLight = false; v.waitStartTime = -1;
+                activeCount++;
+                return true;
+            };
+
+            size_t retryRounds = spawnRetryQueue.size();
+            for (size_t i = 0; i < retryRounds && activeCount < concurrency && spawnedThisTick < spawnBudgetPerTick; ++i) {
+                size_t idx = spawnRetryQueue.front();
+                spawnRetryQueue.pop_front();
+                if (trySpawnIndex(idx)) spawnedThisTick++;
+                else spawnRetryQueue.push_back(idx);
+            }
+            while (activeCount < concurrency && spawnCursor < trips.size() && spawnedThisTick < spawnBudgetPerTick) {
+                size_t idx = spawnCursor++;
+                if (trySpawnIndex(idx)) spawnedThisTick++;
+                else spawnRetryQueue.push_back(idx);
+            }
+
+            // 1.5. Discretionary lane changing (overtaking) - decide/update
+            // each vehicle's lane BEFORE grouping, so every step downstream
+            // (grouping, arbitration, IDM) just sees each vehicle's already-
+            // current lane with no further changes needed - see the lane-
+            // changing section's own header comment for the model. Wide
+            // vehicles (isWideVehicle) and junction-edge vehicles are
+            // excluded entirely: junction-edge vehicles because lanes aren't
+            // meaningful once inside the box (see desiredLaneForStep), wide
+            // ones because they can't share a lane split with anyone anyway.
+            {
+                std::unordered_map<int, std::vector<int>> byChainEdge;
+                for (size_t vi = 0; vi < vehicles.size(); ++vi) {
+                    Vehicle& v = vehicles[vi];
+                    if (!v.active || v.route[v.routeIdx].isJunction) continue;
+                    byChainEdge[v.route[v.routeIdx].edgeIndex].push_back((int)vi);
+                }
+                for (auto& [edgeIdx, idxs] : byChainEdge) {
+                    const ChainEdge& ce = rg.chainEdges[edgeIdx];
+                    if (simLaneCount(ce) < 2) continue;
+                    std::sort(idxs.begin(), idxs.end(), [&](int a, int b) { return vehicles[a].distAlongEdge < vehicles[b].distAlongEdge; });
+                    for (int vi : idxs) {
+                        Vehicle& v = vehicles[vi];
+                        if (isWideVehicle(v.width)) continue;
+                        if (simClock < v.nextLaneEvalAt) continue;
+                        v.nextLaneEvalAt = simClock + 0.8 + 0.4 * (vi % 5); // staggered so the whole edge doesn't re-evaluate in lockstep
+
+                        int homeLane = desiredLaneForStep(rg, v.route, v.routeIdx);
+                        double distToEnd = ce.lengthM - v.distAlongEdge;
+                        double mergeBackDist = std::max(35.0, v.speed * 3.0);
+
+                        // Only a movement that actually REQUIRES the crossing
+                        // lane (right turn / u-turn - homeLane 1, see
+                        // desiredLaneForStep) forces a lane change here. A
+                        // through movement's "home" of lane 0 is just the
+                        // spawn-time default, not a real requirement - going
+                        // straight works fine from either lane - so it's
+                        // left alone entirely: a vehicle that drifted into
+                        // lane 1 (an earlier overtake) stays there until it
+                        // has its own reason to move, rather than being
+                        // yanked back to lane 0 on every approach regardless
+                        // of whether anything ahead actually needs it.
+                        if (homeLane == 1 && v.lane != 1) {
+                            bool urgent = distToEnd <= mergeBackDist;
+                            double gapA = urgent ? MERGE_BACK_GAP_AHEAD_M : LANE_CHANGE_GAP_AHEAD_M;
+                            double gapB = urgent ? MERGE_BACK_GAP_BEHIND_M : LANE_CHANGE_GAP_BEHIND_M;
+                            if (laneChangeSafe(idxs, vehicles, v, vi, 1, gapA, gapB)) v.lane = 1;
+                            continue;
+                        }
+
+                        // Cruising - consider overtaking. Deliberately NOT
+                        // skipped near a junction: the single most useful
+                        // case is exactly there - getting around a vehicle
+                        // that's stopped ahead waiting to turn on red.
+                        int otherLane = 1 - v.lane;
+                        if (advancedLaneAI) {
+                            // "Vision" mode: score both lanes over the next
+                            // VISION_RANGE_M rather than just reacting to the
+                            // immediate leader - see laneVisionCost's own
+                            // comment. The margin avoids flip-flopping when
+                            // both lanes are roughly equally clear.
+                            double desiredSpeed = std::min(v.maxSpeedMps, ce.freeFlowSpeedMps);
+                            double costHome = laneVisionCost(idxs, vehicles, v.lane, v.distAlongEdge, desiredSpeed, vi);
+                            double costOther = laneVisionCost(idxs, vehicles, otherLane, v.distAlongEdge, desiredSpeed, vi);
+                            if (costOther + 0.5 < costHome &&
+                                laneChangeSafe(idxs, vehicles, v, vi, otherLane, LANE_CHANGE_GAP_AHEAD_M, LANE_CHANGE_GAP_BEHIND_M))
+                                v.lane = otherLane;
+                            continue;
+                        }
+                        LaneNeighbors here = findLaneNeighbors(idxs, vehicles, v.lane, v.distAlongEdge, vi);
+                        if (here.aheadVi < 0) continue;
+                        const Vehicle& leader = vehicles[here.aheadVi];
+                        double gapToLeader = leader.distAlongEdge - leader.length - v.distAlongEdge;
+                        double desiredGap = v.minGap + v.speed * v.headwayT;
+                        bool leaderSlow = leader.speed < v.maxSpeedMps * 0.85 && gapToLeader < std::max(desiredGap * 1.4, 10.0);
+                        if (!leaderSlow) continue;
+                        if (laneChangeSafe(idxs, vehicles, v, vi, otherLane, LANE_CHANGE_GAP_AHEAD_M, LANE_CHANGE_GAP_BEHIND_M))
+                            v.lane = otherLane;
+                    }
+                }
             }
 
             // 2. Group active vehicles by current edge, ordered by position
@@ -1152,7 +2114,7 @@ int main(int argc, char** argv) {
             for (size_t vi = 0; vi < vehicles.size(); ++vi) {
                 Vehicle& v = vehicles[vi];
                 if (!v.active) continue;
-                groups[edgeKey(v.route[v.routeIdx])].push_back((int)vi);
+                groups[edgeKey(v.route[v.routeIdx], v.lane)].push_back((int)vi);
             }
             for (auto& [k, idxs] : groups)
                 std::sort(idxs.begin(), idxs.end(), [&](int a, int b) { return vehicles[a].distAlongEdge < vehicles[b].distAlongEdge; });
@@ -1167,8 +2129,63 @@ int main(int argc, char** argv) {
             // gated by a minimum discharge headway so one approach can't
             // starve every other one instantly.
             for (auto& v : vehicles) v.gate = 0;
-            std::unordered_map<int, int> bestVehicleForJunction;
-            std::unordered_map<int, std::pair<int, double>> bestKeyForJunction; // junctionIdx -> (rank, arrivalTime)
+
+            // Emergency preemption (EmergencyOnly AND Density mode - Default
+            // mode has no ambulance-awareness at all, see SignalMode's own
+            // comment): a fresh per-tick scan for any vehicle with
+            // emergency==true at the front of an approach queue leading into
+            // a SIGNALIZED junction, recorded as (junctionIdx -> the
+            // fromWayId to force green) BEFORE the gating loop below decides
+            // any colors, so it can short-circuit both modes' ordinary logic
+            // for a preempted junction. Recomputed fresh every tick (never
+            // latched) so preemption ends automatically the instant the
+            // emergency vehicle clears the junction (its routeIdx advances
+            // past it) or its flag goes back off.
+            emergencyPreemptApproach.clear();
+            if (signalMode != SignalMode::Default) {
+                for (auto& [k, idxs] : groups) {
+                    if (idxs.empty()) continue;
+                    Vehicle& fv = vehicles[idxs.back()];
+                    if (!fv.emergency || fv.vehicleType != "ambulance") continue;
+                    if (fv.route[fv.routeIdx].isJunction || fv.routeIdx + 1 >= fv.route.size()) continue;
+                    const RouteStep& nxt = fv.route[fv.routeIdx + 1];
+                    if (!nxt.isJunction) continue;
+                    const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
+                    if (!rg.junctions[je.junctionIdx].signal.present) continue;
+                    emergencyPreemptApproach[je.junctionIdx] = je.fromWayId;
+                }
+            }
+
+            // Density mode's per-approach "red dot" weight (count of
+            // vehicles currently waiting for this red light, plus the
+            // seconds each has been waiting - see Vehicle::waitingLight) -
+            // built from the END of LAST tick's waiting state, one tick of
+            // lag behind this tick's own gate outcome (decided below), same
+            // as the ordinary impatience-rank feedback loop already accepted
+            // throughout this file.
+            densityApproachWeight.clear();
+            if (signalMode == SignalMode::Density) {
+                for (auto& v : vehicles) {
+                    if (!v.active || !v.waitingLight || v.route[v.routeIdx].isJunction) continue;
+                    if (v.routeIdx + 1 >= v.route.size()) continue;
+                    const RouteStep& nxt = v.route[v.routeIdx + 1];
+                    if (!nxt.isJunction) continue;
+                    const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
+                    densityApproachWeight[std::to_string(je.junctionIdx) + "|" + je.fromWayId] +=
+                        1.0 + std::max(0.0, simClock - v.waitStartTime);
+                }
+            }
+
+            // Candidates competing for entry into each unsignalized junction
+            // this tick (one per approach-lane, i.e. per group's front
+            // vehicle) - see the release loop just below for how more than
+            // one of these can actually be let through together.
+            struct JctCandidate {
+                int vi; std::string fromWayId, movement, toWayId;
+                double arrDirX, arrDirY, lengthM, speedMps;
+                double rank; double arrivalTime;
+            };
+            std::unordered_map<int, std::vector<JctCandidate>> candidatesForJunction;
 
             for (auto& [k, idxs] : groups) {
                 if (idxs.empty()) continue;
@@ -1179,24 +2196,108 @@ int main(int argc, char** argv) {
                 if (!nxt.isJunction) { fv.gate = 1; continue; }
                 const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
                 const JunctionInfo& jn = rg.junctions[je.junctionIdx];
-                if (jn.signal.present) {
+
+                auto preemptIt = emergencyPreemptApproach.find(je.junctionIdx);
+                if (jn.signal.present && preemptIt != emergencyPreemptApproach.end()) {
+                    // Real preemption: this approach wins outright, every
+                    // other approach at this junction forced red - not a
+                    // rank bonus fed into the ordinary arbitration below.
+                    fv.gate = (je.fromWayId == preemptIt->second) ? 1 : 2;
+                } else if (jn.signal.present && (signalMode == SignalMode::Default || signalMode == SignalMode::EmergencyOnly)) {
+                    // EmergencyOnly with no active preemption at this
+                    // junction (handled above) runs the EXACT SAME fixed-
+                    // time math/timer as Default mode - see SignalMode's own
+                    // comment for why that's the whole point of the mode.
                     std::string color = computeLampColor(rg, je.junctionIdx, je.fromWayId, je.movement, simClock);
                     fv.gate = (color == "green") ? 1 : 2;
                 } else {
                     if (fv.arrivalAtStopLineTime < 0) fv.arrivalAtStopLineTime = simClock;
-                    int rank = je.priorityRank;
-                    auto bit = bestKeyForJunction.find(je.junctionIdx);
-                    bool better = bit == bestKeyForJunction.end() || rank > bit->second.first ||
-                                  (rank == bit->second.first && fv.arrivalAtStopLineTime < bit->second.second);
-                    if (better) {
-                        bestKeyForJunction[je.junctionIdx] = {rank, fv.arrivalAtStopLineTime};
-                        bestVehicleForJunction[je.junctionIdx] = frontVi;
-                    }
+                    // Effective rank climbs with wait time (see
+                    // IMPATIENCE_SEC's own comment) so a low-class approach
+                    // isn't starved forever behind a busier cross-street. A
+                    // signalized junction running Density mode instead of
+                    // the fixed-time branch above (see SignalMode's own
+                    // comment) swaps in that mode's own "red dot" weight in
+                    // place of the plain road-class rank; a genuinely
+                    // unsignalized junction (any mode) always uses the plain
+                    // road-class rank.
+                    double waited = std::max(0.0, simClock - fv.arrivalAtStopLineTime);
+                    double rank = (jn.signal.present && signalMode == SignalMode::Density)
+                        ? densityApproachWeight[std::to_string(je.junctionIdx) + "|" + je.fromWayId]
+                        : je.priorityRank + waited / IMPATIENCE_SEC;
+                    candidatesForJunction[je.junctionIdx].push_back({frontVi, je.fromWayId, je.movement, je.toWayId,
+                        je.arrDirX, je.arrDirY, je.lengthM, je.speedMps, rank, fv.arrivalAtStopLineTime});
                     fv.gate = 2; // tentatively closed, possibly flipped below
                 }
             }
-            for (auto& [jidx, vi] : bestVehicleForJunction) {
-                if (simClock >= rg.junctions[jidx].busyUntil) vehicles[vi].gate = 1;
+            // Two candidate movements at the same unsignalized junction (or a
+            // signalized one under Density mode - see SignalMode) can
+            // discharge in the same window - i.e. the junction's effective
+            // capacity this tick, the "width of the intersection" fix - when
+            // they provably don't cross paths (see movementsCompatible's own
+            // comment for the exact rule). Anything else still serializes -
+            // flow-channel fidelity, not full conflict-point geometry;
+            // relaxing only the provably-safe cases widens real bottlenecks
+            // without inventing new mid-junction collisions.
+            for (auto& [jidx, cands] : candidatesForJunction) {
+                JunctionInfo& jn = rg.junctions[jidx];
+                jn.inFlight.erase(std::remove_if(jn.inFlight.begin(), jn.inFlight.end(),
+                    [&](const JctFlight& f) { return simClock >= f.freeAt; }), jn.inFlight.end());
+
+                std::vector<const JctCandidate*> order;
+                order.reserve(cands.size());
+                for (auto& c : cands) order.push_back(&c);
+                std::sort(order.begin(), order.end(), [](const JctCandidate* a, const JctCandidate* b) {
+                    if (a->rank != b->rank) return a->rank > b->rank;
+                    return a->arrivalTime < b->arrivalTime;
+                });
+
+                std::vector<const JctCandidate*> accepted;
+                for (const JctCandidate* c : order) {
+                    bool ok = true;
+                    for (auto& f : jn.inFlight) {
+                        if (!movementsCompatible(c->fromWayId, c->movement, c->arrDirX, c->arrDirY, c->toWayId,
+                                                  f.fromWayId, f.movement, f.arrDirX, f.arrDirY, f.toWayId)) { ok = false; break; }
+                    }
+                    if (ok) for (const JctCandidate* other : accepted) {
+                        if (!movementsCompatible(c->fromWayId, c->movement, c->arrDirX, c->arrDirY, c->toWayId,
+                                                  other->fromWayId, other->movement, other->arrDirX, other->arrDirY, other->toWayId)) { ok = false; break; }
+                    }
+                    if (!ok) continue;
+                    accepted.push_back(c);
+                    vehicles[c->vi].gate = 1;
+                    jn.inFlight.push_back({simClock + c->lengthM / std::max(0.1, c->speedMps) + MIN_DISCHARGE_GAP_SEC,
+                                            c->fromWayId, c->movement, c->toWayId, c->arrDirX, c->arrDirY});
+                }
+            }
+
+            // Density mode's "waiting for the light" red-dot state (see
+            // Vehicle::waitingLight/waitStartTime): a follower is marked
+            // waiting purely from sharing its front vehicle's now-finalized
+            // gate (only front vehicles are ever gated directly - see above;
+            // followers queue up behind them via ordinary IDM car-following),
+            // which is exactly what makes the red dot "chain" backward
+            // through a queue as it forms. Feeds NEXT tick's
+            // densityApproachWeight above, and is streamed to the frontend
+            // as-is (see buildStateJson's per-vehicle "wt" field).
+            for (auto& v : vehicles) if (v.active) v.waitingLight = false;
+            if (signalMode == SignalMode::Density) {
+                for (auto& [k, idxs] : groups) {
+                    if (idxs.empty()) continue;
+                    Vehicle& gfv = vehicles[idxs.back()];
+                    if (gfv.gate != 2 || gfv.route[gfv.routeIdx].isJunction || gfv.routeIdx + 1 >= gfv.route.size()) continue;
+                    const RouteStep& gnxt = gfv.route[gfv.routeIdx + 1];
+                    if (!gnxt.isJunction) continue;
+                    if (!rg.junctions[rg.junctionEdges[gnxt.edgeIndex].junctionIdx].signal.present) continue;
+                    for (int vi : idxs) {
+                        Vehicle& v = vehicles[vi];
+                        if (v.speed < 0.5) v.waitingLight = true;
+                    }
+                }
+            }
+            for (auto& v : vehicles) {
+                if (v.waitingLight) { if (v.waitStartTime < 0) v.waitStartTime = simClock; }
+                else v.waitStartTime = -1;
             }
 
             // 4. IDM acceleration for every active vehicle.
@@ -1220,13 +2321,20 @@ int main(int argc, char** argv) {
                         double nextLimit = nxt.isJunction ? rg.junctionEdges[nxt.edgeIndex].speedMps : rg.chainEdges[nxt.edgeIndex].freeFlowSpeedMps;
                         if (v.gate == 2) {
                             // Blocked (red / lost arbitration): a real
-                            // stationary obstacle at the boundary - IDM's
-                            // ordinary leader-following naturally produces a
-                            // full, held stop here, which is exactly right.
-                            leaderGap = cur.length - v.distAlongEdge;
+                            // stationary obstacle - IDM's ordinary leader-
+                            // following naturally produces a full, held stop
+                            // here, which is exactly right. The obstacle is
+                            // placed STOP_LINE_SETBACK_M short of the edge's
+                            // true end (the pulled-back junction node) so the
+                            // vehicle holds before the intersection's visual
+                            // footprint rather than rendering/logically
+                            // inside it - see that constant's own comment.
+                            double stopBoundary = std::max(0.0, cur.length - STOP_LINE_SETBACK_M);
+                            leaderGap = stopBoundary - v.distAlongEdge;
                             leaderSpeed = 0; hasLeader = true;
                         } else {
-                            auto git = groups.find(edgeKey(nxt));
+                            int nxtLane = desiredLaneForStep(rg, v.route, v.routeIdx + 1);
+                            auto git = groups.find(edgeKey(nxt, nxtLane));
                             if (git != groups.end() && !git->second.empty()) {
                                 Vehicle& rv = vehicles[git->second.front()];
                                 leaderGap = (cur.length - v.distAlongEdge) + rv.distAlongEdge - rv.length;
@@ -1281,6 +2389,37 @@ int main(int argc, char** argv) {
                 while (v.active && v.distAlongEdge >= v.route[v.routeIdx].length) {
                     const RouteStep& cur = v.route[v.routeIdx];
                     if (v.routeIdx + 1 >= v.route.size()) {
+                        // Emergency dispatch (see handleCommand's
+                        // triggerEmergency): reaching the end of the
+                        // incident-bound leg (phase 1) hands off to a fresh
+                        // leg toward the ambulance's own home hospital
+                        // instead of ending the trip - reaching the end of
+                        // THAT leg (phase 2), or a plain non-emergency trip,
+                        // ends it exactly as before.
+                        if (v.emergency && v.emergencyPhase == 1) {
+                            v.incidentArrivalTime = simClock;
+                            auto hit = hospitalNodeByAmenityId.find(v.homeAmenityId);
+                            std::vector<RouteStep> toHospital;
+                            if (hit != hospitalNodeByAmenityId.end()) {
+                                std::string err;
+                                toHospital = resolveRoute(rg, chg, rg.nodeId[stepToNode(rg, cur)], hit->second, err);
+                            }
+                            if (!toHospital.empty()) {
+                                v.route = std::move(toHospital);
+                                v.routeIdx = 0; v.distAlongEdge = 0;
+                                v.lane = desiredLaneForStep(rg, v.route, 0);
+                                v.emergencyPhase = 2;
+                                break;
+                            }
+                            // No known home hospital, or routing to it
+                            // failed - fall through and end the trip like an
+                            // ordinary completion, below.
+                        }
+                        if (v.emergency && v.emergencyPhase == 2) {
+                            emergencyStats.count++;
+                            emergencyStats.sumResponseSec += std::max(0.0, v.incidentArrivalTime - v.dispatchTime);
+                            emergencyStats.sumTransportSec += std::max(0.0, simClock - v.incidentArrivalTime);
+                        }
                         v.active = false; activeCount--; totalCompleted++;
                         double tripSec = simClock - v.spawnSimTime;
                         auto& ts = completedByType[v.vehicleType];
@@ -1300,18 +2439,20 @@ int main(int argc, char** argv) {
                             // unsignalized one rather than bypass arbitration.
                             const JunctionEdge& je2 = rg.junctionEdges[nxt.edgeIndex];
                             const JunctionInfo& jn2 = rg.junctions[je2.junctionIdx];
-                            gateOk = jn2.signal.present && computeLampColor(rg, je2.junctionIdx, je2.fromWayId, je2.movement, simClock) == "green";
+                            gateOk = jn2.signal.present && signalMode == SignalMode::Default &&
+                                     computeLampColor(rg, je2.junctionIdx, je2.fromWayId, je2.movement, simClock) == "green";
                         }
                         if (!gateOk) { v.distAlongEdge = cur.length; break; }
                     }
                     double overshoot = v.distAlongEdge - cur.length;
-                    if (nxt.isJunction) {
-                        const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
-                        JunctionInfo& jn = rg.junctions[je.junctionIdx];
-                        if (!jn.signal.present) jn.busyUntil = simClock + je.lengthM / std::max(0.1, je.speedMps) + MIN_DISCHARGE_GAP_SEC;
-                        v.arrivalAtStopLineTime = -1;
-                    }
+                    // Reservation bookkeeping for the NEXT unsignalized
+                    // junction this vehicle reaches already lives in
+                    // JunctionInfo::inFlight, populated the moment
+                    // arbitration granted gate==1 (see step 3) rather than
+                    // here at physical entry - nothing further to record.
+                    if (nxt.isJunction) v.arrivalAtStopLineTime = -1;
                     v.routeIdx++;
+                    if (!nxt.isJunction) v.lane = desiredLaneForStep(rg, v.route, v.routeIdx);
                     v.distAlongEdge = overshoot;
                 }
             }
@@ -1331,6 +2472,9 @@ int main(int argc, char** argv) {
                           << " avgSpeed=" << (nActive ? (sumSpeed / nActive) * 3.6 : 0.0) << "km/h"
                           << " avgTrip=" << (allCount ? allSum / allCount : 0.0) << "s"
                           << " avgAmbTrip=" << avgAmbTrip << "s"
+                          << " emergencies=" << emergencyStats.count
+                          << " avgResponse=" << (emergencyStats.count ? emergencyStats.sumResponseSec / emergencyStats.count : 0.0) << "s"
+                          << " avgTransport=" << (emergencyStats.count ? emergencyStats.sumTransportSec / emergencyStats.count : 0.0) << "s"
                           << " failedRoutes=" << totalFailedRoute
                           << (headless ? "" : (" wsClients=" + std::to_string(server.clientCount()))) << "\n";
             }
@@ -1345,22 +2489,35 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // 7. Broadcast this tick's snapshot (every tick = 20Hz, within the
-            // 10-20Hz target) and, unless running headless for scripted
-            // testing, pace the loop to real time (scaled by speedMultiplier)
-            // rather than running flat-out - Phase 2 measured ~20x real-time
-            // even at 10k concurrent vehicles on this hardware, so without
-            // this the whole manifest would blow past in seconds instead of
-            // playing out live.
-            if (!headless) {
-                server.broadcast(buildStateJson(simClock, vehicles, rg, totalSpawned, totalCompleted, trips.size()));
-                double targetDt = dt / speedMultiplier;
-                double elapsed = std::chrono::duration<double>(Clock::now() - tickWallStart).count();
-                if (elapsed < targetDt) std::this_thread::sleep_for(std::chrono::duration<double>(targetDt - elapsed));
-            }
-
             simClock += dt;
-            if (activeCount == 0 && spawnCursor >= trips.size()) break;
+            if (activeCount == 0 && spawnCursor >= trips.size() && spawnRetryQueue.empty()) { allDone = true; break; }
+            } // end of per-tick batch (rep loop)
+
+            // 7. Broadcast the latest snapshot and, unless running headless
+            // for scripted testing, pace the loop to real time. This always
+            // sleeps for one nominal dt's worth of real time (never a
+            // fraction of it) and instead varies HOW MANY physics ticks ran
+            // in ticksThisIteration above to reach the target rate - an
+            // earlier version instead divided dt itself by speedMultiplier
+            // and slept for that shrinking fraction directly, which fell
+            // badly short of the requested speed above roughly 5-8x: Windows'
+            // std::this_thread::sleep_for has coarse granularity (commonly
+            // ~15ms) that dominates once the requested sleep drops to a few
+            // milliseconds, so the loop kept oversleeping regardless of how
+            // high speedMultiplier was set (measured: 24x only achieved
+            // ~5x). Keeping every sleep pinned to a full ~50ms tick's worth
+            // of real time stays comfortably above that granularity at any
+            // speedMultiplier, and broadcasting once per batch instead of
+            // once per physics tick also caps network/JSON-build cost at a
+            // steady ~20Hz instead of scaling it up with speed for no
+            // visual benefit (a browser can't usefully render faster than
+            // that anyway).
+            if (!headless) {
+                server.broadcast(buildStateJson(simClock, vehicles, rg, totalSpawned, totalCompleted, trips.size(), signalMode,
+                                                 emergencyPreemptApproach, densityApproachWeight, completedByType, emergencyStats));
+                double elapsed = std::chrono::duration<double>(Clock::now() - tickWallStart).count();
+                if (elapsed < dt) std::this_thread::sleep_for(std::chrono::duration<double>(dt - elapsed));
+            }
         }
         if (!headless) std::cerr << "[sim] stopping (t=" << simClock << "s, stopRequested=" << stopRequested << ")\n";
 
@@ -1370,6 +2527,10 @@ int main(int argc, char** argv) {
                   << ", still active: " << activeCount << "\n";
         for (auto& [ty, ts] : completedByType)
             std::cerr << "  " << ty << ": " << ts.count << " completed, avg trip " << (ts.count ? ts.sumTripSec / ts.count : 0.0) << "s\n";
+        if (emergencyStats.count)
+            std::cerr << "  emergencies: " << emergencyStats.count
+                      << ", avg response (dispatch->incident) " << emergencyStats.sumResponseSec / emergencyStats.count << "s"
+                      << ", avg transport (incident->hospital) " << emergencyStats.sumTransportSec / emergencyStats.count << "s\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[sim] FATAL: " << ex.what() << "\n";

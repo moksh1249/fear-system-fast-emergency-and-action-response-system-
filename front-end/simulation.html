@@ -82,6 +82,20 @@
           <input type="number" id="liveSimSpeedInput" class="sim-number-input" min="0.1" max="24" step="0.1" value="1">
         </div>
 
+        <div class="checkrow" style="margin: 8px 0;">
+          <input type="checkbox" id="liveSimAdvancedAiChk">
+          <label for="liveSimAdvancedAiChk" title="Vehicles look up to 50m ahead and score both lanes before overtaking, instead of just reacting to the vehicle directly in front. More realistic, costs more CPU per vehicle - leave off on a lower-power machine.">🔬 Advanced lane AI (vision + mini-pathfinding)</label>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimSignalModeSelect">Signal-control mode</label>
+          <select id="liveSimSignalModeSelect" class="sim-number-input">
+            <option value="default">Default (fixed-time)</option>
+            <option value="density">Traffic-density-based</option>
+            <option value="emergency">Emergency-only preemption</option>
+          </select>
+        </div>
+
         <div class="live-sim-btn-row">
           <button id="liveSimStartBtn" title="Start the C++ simulation engine">▶ Start engine</button>
           <button id="liveSimStopBtn" title="Stop the running simulation engine">◼ Stop engine</button>

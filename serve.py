@@ -104,7 +104,8 @@ def _sim_log(msg):
 def ensure_sim_engine_binary():
     """Same on-demand compile pattern as ensure_ch_binary() (including the
     -static reasoning documented there), plus -lws2_32 for sim_engine.cpp's
-    own hand-rolled websocket server."""
+    own hand-rolled websocket server and -lwinmm for timeBeginPeriod (tighter
+    real-time pacing precision - see TimerResolutionGuard there)."""
     if not os.path.exists(SIM_SRC):
         return False
     if os.path.exists(SIM_EXE) and os.path.getmtime(SIM_EXE) >= os.path.getmtime(SIM_SRC):
@@ -117,7 +118,7 @@ def ensure_sim_engine_binary():
 
     _sim_log("compiling sim_engine.cpp ...")
     result = subprocess.run(
-        [gxx, "-O2", "-std=c++17", "-static", "-o", SIM_EXE, SIM_SRC, "-lws2_32"],
+        [gxx, "-O2", "-std=c++17", "-static", "-o", SIM_EXE, SIM_SRC, "-lws2_32", "-lwinmm"],
         cwd=SIM_DIR, capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -176,6 +177,10 @@ def start_sim_engine(opts):
         argv += ["--ramp-seconds", str(float(opts["rampSeconds"]))]
     if opts.get("speed"):
         argv += ["--speed", str(float(opts["speed"]))]
+    if opts.get("advancedLaneAI"):
+        argv += ["--advanced-lane-ai"]
+    if opts.get("signalMode") in ("default", "emergency", "density"):
+        argv += ["--signal-mode", opts["signalMode"]]
 
     with _sim_lock:
         log_f = open(SIM_LOG_PATH, "w", encoding="utf-8")

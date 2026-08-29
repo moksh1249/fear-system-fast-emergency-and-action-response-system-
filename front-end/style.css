@@ -346,6 +346,65 @@ body{
 }
 
 /* ============================================================
+   SIMULATION RUN STATS POPUP (centered modal, shown on engine stop)
+   ============================================================ */
+.sim-stats-overlay{
+  position:fixed; inset:0;
+  background: rgba(26,26,46,0.55);
+  display:flex; align-items:center; justify-content:center;
+  z-index: 50;
+}
+.sim-stats-modal{
+  background: var(--panel-bg);
+  border: 3px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 6px 6px 0 var(--shadow);
+  width: 380px; max-width: 92vw;
+  max-height: 82vh;
+  display:flex; flex-direction:column;
+  overflow:hidden;
+}
+.sim-stats-head{
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 12px 16px;
+  background: var(--topbar-bg);
+  border-bottom: 3px solid var(--border);
+  font-weight: 700;
+  font-size: 15px;
+}
+.sim-stats-close{
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  width: 26px; height: 26px;
+  line-height: 1;
+  cursor: pointer;
+  font-size: 15px;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+.sim-stats-close:hover{ transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--shadow); }
+.sim-stats-body{ padding: 14px 16px; overflow-y: auto; }
+.sim-stats-section-title{
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+.sim-stats-section-title:first-child{ margin-top: 0; }
+.sim-stats-row{
+  display:flex; align-items:center; justify-content:space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 13px;
+}
+.sim-stats-row:last-child{ border-bottom: none; }
+.sim-stats-row span:last-child{ font-weight: 600; }
+.sim-stats-highlight span:last-child{ color: var(--accent); font-size: 14px; }
+
+/* ============================================================
    INSPECTOR & SETTINGS PANELS (right overlays, full height)
    ============================================================ */
 #inspector{
