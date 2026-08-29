@@ -736,6 +736,15 @@ body{
   width:auto; flex:1; margin-bottom:0; padding:5px 2px; font-size:11px;
 }
 
+.live-sim-btn-row{ display:flex; gap:6px; margin-top:10px; }
+#sidebar .live-sim-btn-row button{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:auto; flex:1; margin-bottom:0; white-space:normal; text-align:center;
+}
+#sidebar .live-sim-btn-row button:disabled{
+  opacity:0.45; cursor:default; transform:none; box-shadow:2px 2px 0 rgba(0,0,0,0.25);
+}
+
 /* ============================================================
    EXTERNAL CONTROL (sidebar status list + inspector test panel)
    Violet is used nowhere else in this palette, so it reads

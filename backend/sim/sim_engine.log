@@ -1,0 +1,5 @@
+[sim] road graph: 15589 nodes, 20129 chain edges, 20574 junction edges, 2844 junctions (3 signalized), 60 ways skipped (non-routable/invalid)
+[sim] CH graph: 25525 nodes
+[sim] loaded 10000 trip specs (setup 90.8808 ms)
+[sim] websocket server listening on ws://127.0.0.1:8766
+[sim t=0.0s] active=1 spawned=1/10000 completed=0 avgSpeed=0.5km/h avgTrip=0.0s avgAmbTrip=0.0s failedRoutes=0 wsClients=0

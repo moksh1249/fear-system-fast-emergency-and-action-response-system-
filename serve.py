@@ -77,6 +77,132 @@ CH_META_PATH = os.path.join(MAPS_DIR, "map_data.ch.meta.json")
 CH_QUERY_SRC = os.path.join(CH_DIR, "ch_query.cpp")
 CH_QUERY_EXE = os.path.join(CH_DIR, "ch_query.exe" if os.name == "nt" else "ch_query")
 
+# backend/sim/sim_engine.cpp - the real-time vehicle simulation engine (see
+# its own header comment). Unlike the CH tools, this is a long-running
+# process with a websocket server, not a one-shot query - /api/sim/start
+# spawns it as a background subprocess and /api/sim/stop tears it down;
+# nothing here talks to it directly once it's running, the front-end
+# (front-end/sim-client.js) connects its own websocket straight to
+# SIM_ENGINE_PORT. Windows-only for now (winsock2, like the rest of this
+# project's toolchain assumptions).
+SIM_DIR = os.path.join(BACKEND_DIR, "sim")
+SIM_SRC = os.path.join(SIM_DIR, "sim_engine.cpp")
+SIM_EXE = os.path.join(SIM_DIR, "sim_engine.exe" if os.name == "nt" else "sim_engine")
+SIM_VEHICLES_PATH = os.path.join(MAPS_DIR, "vehicles.json")
+SIM_LOG_PATH = os.path.join(SIM_DIR, "sim_engine.log")
+SIM_DEFAULT_PORT = 8766
+
+SIM_ENGINE_PROC = None   # subprocess.Popen | None
+SIM_ENGINE_PORT = None
+_sim_lock = threading.Lock()
+
+
+def _sim_log(msg):
+    print(f"[sim] {msg}", flush=True)
+
+
+def ensure_sim_engine_binary():
+    """Same on-demand compile pattern as ensure_ch_binary() (including the
+    -static reasoning documented there), plus -lws2_32 for sim_engine.cpp's
+    own hand-rolled websocket server."""
+    if not os.path.exists(SIM_SRC):
+        return False
+    if os.path.exists(SIM_EXE) and os.path.getmtime(SIM_EXE) >= os.path.getmtime(SIM_SRC):
+        return True
+
+    gxx = shutil.which("g++")
+    if not gxx:
+        _sim_log("g++ not found on PATH - skipping sim engine build")
+        return False
+
+    _sim_log("compiling sim_engine.cpp ...")
+    result = subprocess.run(
+        [gxx, "-O2", "-std=c++17", "-static", "-o", SIM_EXE, SIM_SRC, "-lws2_32"],
+        cwd=SIM_DIR, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        _sim_log("g++ build FAILED:")
+        sys.stderr.write(result.stderr)
+        return False
+    _sim_log(f"built {SIM_EXE}")
+    return True
+
+
+def sim_engine_status():
+    """Polls the tracked subprocess (if any) and reports its live state.
+    Also clears SIM_ENGINE_PROC if the process has exited on its own (ran to
+    --sim-seconds, or crashed) so a stale handle doesn't linger."""
+    global SIM_ENGINE_PROC, SIM_ENGINE_PORT
+    with _sim_lock:
+        if SIM_ENGINE_PROC is not None and SIM_ENGINE_PROC.poll() is not None:
+            SIM_ENGINE_PROC = None
+            SIM_ENGINE_PORT = None
+        running = SIM_ENGINE_PROC is not None
+        return {"running": running, "port": SIM_ENGINE_PORT if running else None,
+                "pid": SIM_ENGINE_PROC.pid if running else None}
+
+
+def start_sim_engine(opts):
+    """Spawns sim_engine.exe as a background, non-blocking subprocess (its
+    stdout/stderr - periodic stats, warnings - go to SIM_LOG_PATH, since it
+    runs indefinitely and nothing here reads its pipes as it goes). Returns
+    the status dict; a start request while one is already running is a no-op
+    that just reports the existing instance, rather than an error - the
+    front-end's Start button shouldn't have to know or care whether a
+    previous session's engine is still alive."""
+    global SIM_ENGINE_PROC, SIM_ENGINE_PORT
+    status = sim_engine_status()
+    if status["running"]:
+        return {"ok": True, "status": "already-running", **status}
+
+    if not os.path.exists(MAP_DATA_PATH):
+        return {"ok": False, "error": "map_data.json not found"}
+    if not os.path.exists(CH_BIN_PATH):
+        return {"ok": False, "error": "no map_data.ch.bin yet - click Recalculate CH first"}
+    vehicles_path = opts.get("vehiclesPath") or SIM_VEHICLES_PATH
+    if not os.path.exists(vehicles_path):
+        return {"ok": False, "error": f"vehicle manifest not found at {vehicles_path} - "
+                                       f"run backend/generate_vehicles.py first"}
+    if not ensure_sim_engine_binary():
+        return {"ok": False, "error": "sim_engine.exe not available (g++ missing or build failed - check server console)"}
+
+    port = int(opts.get("port") or SIM_DEFAULT_PORT)
+    argv = [SIM_EXE, MAP_DATA_PATH, CH_BIN_PATH, vehicles_path, "--port", str(port)]
+    if opts.get("concurrency"):
+        argv += ["--concurrency", str(int(opts["concurrency"]))]
+    if opts.get("simSeconds"):
+        argv += ["--sim-seconds", str(float(opts["simSeconds"]))]
+    if opts.get("rampSeconds"):
+        argv += ["--ramp-seconds", str(float(opts["rampSeconds"]))]
+    if opts.get("speed"):
+        argv += ["--speed", str(float(opts["speed"]))]
+
+    with _sim_lock:
+        log_f = open(SIM_LOG_PATH, "w", encoding="utf-8")
+        proc = subprocess.Popen(argv, cwd=SIM_DIR, stdout=subprocess.DEVNULL, stderr=log_f)
+        SIM_ENGINE_PROC = proc
+        SIM_ENGINE_PORT = port
+    _sim_log(f"started sim_engine.exe (pid {proc.pid}) on port {port} - log: {SIM_LOG_PATH}")
+    return {"ok": True, "status": "started", "running": True, "port": port, "pid": proc.pid}
+
+
+def stop_sim_engine():
+    global SIM_ENGINE_PROC, SIM_ENGINE_PORT
+    with _sim_lock:
+        proc = SIM_ENGINE_PROC
+        SIM_ENGINE_PROC = None
+        SIM_ENGINE_PORT = None
+    if proc is None or proc.poll() is not None:
+        return {"ok": True, "status": "not-running"}
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    _sim_log("stopped sim_engine.exe")
+    return {"ok": True, "status": "stopped"}
+
+
 # ============================================================
 # EXTERNAL SIGNAL CONTROL - lets any process (a Python or C++ script, see
 # backend/signal_control.py and backend/signal_control_example.cpp, or the
@@ -255,6 +381,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 }
             self._send_json(200, {"ok": True, "overrides": overrides})
             return
+        if self.path == "/api/sim/status":
+            self._send_json(200, {"ok": True, **sim_engine_status()})
+            return
         super().do_GET()
 
     def do_POST(self):
@@ -344,6 +473,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/api/shutdown":
             self._send_json(200, {"ok": True})
+            # A still-running sim_engine.exe has its own lifetime independent
+            # of this HTTP server (see start_sim_engine) - closing the app
+            # from the "Close" button should take it down too rather than
+            # orphan it in the background.
+            stop_sim_engine()
             # Run in a separate thread: shutdown() blocks until serve_forever's
             # loop exits, which can't happen from this same request-handling thread.
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -410,6 +544,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     sys.stderr.write(result.stderr)
                 out = json.loads(result.stdout)
                 self._send_json(200, out)
+            except Exception as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            return
+
+        # ============================================================
+        # LIVE SIMULATION ENGINE lifecycle - start/stop backend/sim/sim_engine.exe
+        # as a background subprocess. The engine's own websocket server (not
+        # this HTTP server) streams vehicle positions; front-end/sim-client.js
+        # connects to it directly at ws://127.0.0.1:<port> once /api/sim/start
+        # reports "started". See start_sim_engine()'s docstring for the body
+        # shape (all fields optional).
+        # ============================================================
+        if self.path == "/api/sim/start":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length) if length else b"{}"
+                opts = json.loads(raw) if raw.strip() else {}
+                self._send_json(200, start_sim_engine(opts))
+            except Exception as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            return
+
+        if self.path == "/api/sim/stop":
+            try:
+                self._send_json(200, stop_sim_engine())
             except Exception as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
             return
@@ -495,6 +654,7 @@ def main():
             httpd.serve_forever()
         except KeyboardInterrupt:
             pass
+        stop_sim_engine()  # don't orphan a running sim_engine.exe on Ctrl+C either
         print("Server closed.")
 
 

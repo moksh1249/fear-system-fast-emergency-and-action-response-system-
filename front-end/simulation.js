@@ -315,6 +315,7 @@ async function boot() {
   updateBuildingsButton();
   updateAmenitiesButton();
   initSimControlsUI();
+  if (typeof initLiveSimUI === "function") initLiveSimUI();
   updateRotationReadout();
   initResizablePanel($("#inspector"), "inspectorWidth");
   initResizablePanel($("#settingsPanel"), "settingsPanelWidth");

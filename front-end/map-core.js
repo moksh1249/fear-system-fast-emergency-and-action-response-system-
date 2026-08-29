@@ -1016,6 +1016,10 @@ function render() {
   // that script is ever removed from a page.
   if (window.RouteTest && window.RouteTest.draw) window.RouteTest.draw();
 
+  // Live vehicle positions streamed from the C++ simulation engine
+  // (sim-client.js) - same no-op-if-absent guard as RouteTest above.
+  if (window.LiveSim && window.LiveSim.draw) window.LiveSim.draw();
+
   updateStatusSelection();
 }
 

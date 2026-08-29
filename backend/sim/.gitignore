@@ -1,0 +1,6 @@
+# Compiled with g++ (manually for now; serve.py will do this on-demand once
+# Phase 3 wires the engine's lifecycle in, same as backend/ch/*.exe) - not
+# source, don't commit.
+*.exe
+*.o
+*.obj
