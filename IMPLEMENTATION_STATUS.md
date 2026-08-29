@@ -227,6 +227,61 @@ the originally-planned incident-preset system:
   real rotated width/length, not just half its length) - a bug fix, since
   the original always-half-length placement floated the dot well clear of
   an east/west-facing vehicle instead of sitting on top of it.
+- **Session 3 findings** (user again flagged a collision risk in the phasing
+  display and, separately, vehicles visibly overlapping "when the space is
+  less"): two genuinely distinct bugs, both fixed.
+  1. **Density-mode lamp display was self-inconsistent.** `buildStateJson`'s
+     lamp-color loop decided each approach's displayed color by checking it
+     ONLY against `JunctionInfo::inFlight` (vehicles physically mid-crossing
+     right now) - during any lull where nothing happened to be mid-crossing,
+     every approach at a junction trivially read as "compatible with
+     nothing" and displayed green simultaneously, even though those
+     approaches were not mutually compatible with EACH OTHER. The real
+     per-tick admission (`candidatesForJunction`) was already correct and
+     internally consistent (each accepted candidate is checked against both
+     `inFlight` AND everything else accepted that same tick) - this was a
+     **display-only** bug, but a reasonable one to read as "the phasing
+     itself is unsafe" since the lamps are the only visible signal of it.
+     Fixed by having the lamp loop run the SAME greedy compatibility
+     acceptance as the real admission, applied to every approach at the
+     junction (not just ones with a vehicle currently waiting), ranked by
+     the same `densityApproachWeight` shown in the sidebar. Verified live:
+     the map's busiest (8-arm) junction now shows exactly one approach group
+     green at a time instead of 3-4 simultaneously.
+  2. **No hard capacity check on ordinary (non-junction-gated) edge
+     transitions - the real cause of severe vehicle overlap.** Only a
+     transition INTO a junction edge (`nxt.isJunction`) was hard-blocked by
+     a red/lost-arbitration light (`gateOk`); a transition onto an ordinary
+     downstream chain edge, or - separately - onto an already-granted
+     junction edge that was simply out of physical room, had no equivalent
+     floor. Step 4's IDM lookahead tries to decelerate a vehicle toward a
+     stop when the next lane is already occupied, but that's advisory only:
+     nothing stopped a vehicle from crossing `distAlongEdge >= cur.length`
+     into an already-packed lane regardless once its own integrated position
+     reached the boundary. Under sustained heavy load this compounded badly
+     at popular chokepoints - confirmed via direct instrumentation that
+     100+ genuinely distinct vehicles (different routes, different
+     routeIdx) ended up parked at bit-for-bit identical positions on a
+     single edge. Fixed with two hard capacity checks in the step-5
+     edge-transition code, both holding a vehicle at its current edge's end
+     (`distAlongEdge = cur.length`, same treatment a red light already got)
+     whenever the target lane doesn't have room for its own length + minGap:
+     one for chain-to-chain transitions, one for a granted-but-still-full
+     junction edge (a green/admitted movement previously said nothing about
+     whether the junction edge itself had room - same-approach vehicles are
+     always "compatible" with each other per rule 1, so nothing else limited
+     how many could pile onto a short crossing). Verified live via direct
+     pairwise overlap detection (spatial-hashed, using the client's own
+     rendered/lane-offset-adjusted positions): under 4500-concurrency stress
+     testing, near-total-overlap pairs dropped from ~44,600 to ~240, and the
+     remaining ones are ordinary tight-but-physically-plausible bumper-to-
+     bumper spacing, not same-point stacking.
+  Also fixed in this pass: spawning skipped its own-lane clearance check
+  entirely whenever a trip's route started already crossing a junction
+  (`route[0].isJunction`) - a real, if smaller, contributor to pileups at
+  junction-node-origin depots. The check now applies to both edge types
+  (junction edges have no lane concept, so the lane match is skipped only
+  there).
 - **Resolved in Session 2:** EmergencyOnly mode's priority no longer applies
   to any `vehicleType=="ambulance"` - it now requires the new `emergency`
   flag (Phase 5), so a plain, non-dispatched ambulance trip gets zero

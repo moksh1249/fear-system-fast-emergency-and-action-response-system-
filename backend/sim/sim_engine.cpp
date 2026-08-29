@@ -1531,28 +1531,62 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
             bool preempting = preemptIt != emergencyPreemptApproach.end();
             if (signalMode == SignalMode::EmergencyOnly && !preempting) continue;
             std::unordered_set<std::string> seen;
+            std::vector<const JunctionEdge*> approaches;
             for (const JunctionEdge& je : rg.junctionEdges) {
                 if (je.junctionIdx != (int)ji) continue;
-                std::string key = je.fromWayId + "|" + je.movement;
-                if (!seen.insert(key).second) continue;
-                bool green;
-                const char* reason;
-                if (preempting) {
-                    green = je.fromWayId == preemptIt->second;
-                    reason = "emergency";
-                } else {
-                    green = true;
+                if (!seen.insert(je.fromWayId + "|" + je.movement).second) continue;
+                approaches.push_back(&je);
+            }
+            const char* reason = preempting ? "emergency" : "density";
+            std::vector<const JunctionEdge*> greenList;
+            if (preempting) {
+                for (auto* je : approaches) if (je->fromWayId == preemptIt->second) greenList.push_back(je);
+            } else {
+                // Density mode: replicate the SAME greedy compatibility
+                // acceptance the real per-tick admission uses (see step 3's
+                // candidatesForJunction loop above), applied to EVERY
+                // approach at this junction - not just ones with a vehicle
+                // currently waiting. Checking each approach only against
+                // jn.inFlight in isolation (an earlier version of this did
+                // exactly that) is wrong: during a lull with nothing actually
+                // mid-crossing, every approach reads as "compatible with
+                // nothing" and would display green simultaneously even when
+                // they are NOT mutually compatible with each other - painting
+                // the junction as safe for everyone at once when real
+                // vehicles would never actually be granted that together.
+                // Ranking by the same densityApproachWeight shown in the
+                // sidebar keeps the displayed set consistent with what real
+                // vehicles would actually be granted if they all showed up.
+                std::vector<const JunctionEdge*> order = approaches;
+                std::sort(order.begin(), order.end(), [&](const JunctionEdge* a, const JunctionEdge* b) {
+                    auto wOf = [&](const JunctionEdge* e) {
+                        auto it = densityApproachWeight.find(std::to_string(ji) + "|" + e->fromWayId);
+                        return it != densityApproachWeight.end() ? it->second : 0.0;
+                    };
+                    double wa = wOf(a), wb = wOf(b);
+                    if (wa != wb) return wa > wb;
+                    return (a->fromWayId + a->movement) < (b->fromWayId + b->movement);
+                });
+                for (const JunctionEdge* c : order) {
+                    bool ok = true;
                     for (auto& f : jn.inFlight) {
-                        if (!movementsCompatible(je.fromWayId, je.movement, je.arrDirX, je.arrDirY, je.toWayId,
-                                                  f.fromWayId, f.movement, f.arrDirX, f.arrDirY, f.toWayId)) { green = false; break; }
+                        if (!movementsCompatible(c->fromWayId, c->movement, c->arrDirX, c->arrDirY, c->toWayId,
+                                                  f.fromWayId, f.movement, f.arrDirX, f.arrDirY, f.toWayId)) { ok = false; break; }
                     }
-                    reason = "density";
+                    if (ok) for (const JunctionEdge* other : greenList) {
+                        if (!movementsCompatible(c->fromWayId, c->movement, c->arrDirX, c->arrDirY, c->toWayId,
+                                                  other->fromWayId, other->movement, other->arrDirX, other->arrDirY, other->toWayId)) { ok = false; break; }
+                    }
+                    if (ok) greenList.push_back(c);
                 }
+            }
+            for (auto* je : approaches) {
+                bool green = std::find(greenList.begin(), greenList.end(), je) != greenList.end();
                 if (!firstLamp) out += ",";
                 firstLamp = false;
                 out += "{\"nodeId\":"; appendJsonString(out, rg.nodeId[jn.primaryNodeIdx]);
-                out += ",\"wayId\":"; appendJsonString(out, je.fromWayId);
-                out += ",\"movement\":"; appendJsonString(out, je.movement);
+                out += ",\"wayId\":"; appendJsonString(out, je->fromWayId);
+                out += ",\"movement\":"; appendJsonString(out, je->movement);
                 out += ",\"color\":\""; out += (green ? "green" : "red"); out += "\"";
                 out += ",\"r\":\""; out += reason; out += "\"}";
             }
@@ -1987,13 +2021,22 @@ int main(int argc, char** argv) {
                     return true;
                 }
                 int spawnLane = desiredLaneForStep(rg, route, 0);
-                if (!route[0].isJunction) {
-                    for (auto& ov : vehicles) {
-                        if (!ov.active || ov.route.empty()) continue;
-                        const RouteStep& os = ov.route[ov.routeIdx];
-                        if (os.isJunction || os.edgeIndex != route[0].edgeIndex || ov.lane != spawnLane) continue;
-                        if (ov.distAlongEdge < SPAWN_CLEARANCE_M) return false; // blocked - caller re-queues
-                    }
+                // Checked for EITHER edge type - a route that starts already
+                // crossing a junction (its origin node IS an intersection)
+                // used to skip this check entirely, which let unbounded
+                // numbers of trips spawn on top of each other at any popular
+                // junction-node origin (a real, observed cause of large
+                // vehicle pileups, not just a rare edge case - see the map's
+                // own busiest junction-adjacent depots). Junction edges have
+                // no real lane concept (see desiredLaneForStep/edgeKey), so
+                // the lane match is skipped there - any existing occupant of
+                // that same junction edge blocks a fresh spawn onto it.
+                for (auto& ov : vehicles) {
+                    if (!ov.active || ov.route.empty()) continue;
+                    const RouteStep& os = ov.route[ov.routeIdx];
+                    if (os.isJunction != route[0].isJunction || os.edgeIndex != route[0].edgeIndex) continue;
+                    if (!route[0].isJunction && ov.lane != spawnLane) continue;
+                    if (ov.distAlongEdge < SPAWN_CLEARANCE_M) return false; // blocked - caller re-queues
                 }
                 totalSpawned++;
                 Vehicle& v = vehicles[idx];
@@ -2300,6 +2343,29 @@ int main(int argc, char** argv) {
                 else v.waitStartTime = -1;
             }
 
+            // Merge-point awareness: if more than one current-edge group's
+            // front vehicle targets the SAME next-edge lane this tick (two
+            // lanes of one approach reconverging after a junction, or two
+            // junction movements sharing one destination lane), collect them
+            // here so step 4 below can gap them against EACH OTHER, not only
+            // against whatever already happens to occupy that lane. Without
+            // this, simultaneous convergers have no mutual awareness at all -
+            // each only checks the lane's pre-existing occupant (or nothing,
+            // if it's currently empty) - and can advance onto the same spot
+            // at the same time, which is exactly the vehicle-overlap seen at
+            // narrow merge points right after a junction. Excludes vehicles
+            // currently held at a red/lost-arbitration stop line (gate==2 -
+            // they aren't going anywhere near the merge point this tick).
+            std::unordered_map<uint64_t, std::vector<int>> mergeApproachers;
+            for (auto& [k, idxs] : groups) {
+                if (idxs.empty()) continue;
+                Vehicle& fv = vehicles[idxs.back()];
+                if (fv.gate == 2 || fv.routeIdx + 1 >= fv.route.size()) continue;
+                const RouteStep& nxt = fv.route[fv.routeIdx + 1];
+                int nxtLane = desiredLaneForStep(rg, fv.route, fv.routeIdx + 1);
+                mergeApproachers[edgeKey(nxt, nxtLane)].push_back(idxs.back());
+            }
+
             // 4. IDM acceleration for every active vehicle.
             const double DELTA = 4.0;
             for (auto& [k, idxs] : groups) {
@@ -2334,11 +2400,42 @@ int main(int argc, char** argv) {
                             leaderSpeed = 0; hasLeader = true;
                         } else {
                             int nxtLane = desiredLaneForStep(rg, v.route, v.routeIdx + 1);
-                            auto git = groups.find(edgeKey(nxt, nxtLane));
+                            uint64_t nextKey = edgeKey(nxt, nxtLane);
+                            // Unify "the real vehicle already on the next
+                            // edge/lane" and "every OTHER group's own front
+                            // vehicle also about to enter that SAME lane this
+                            // tick" (see mergeApproachers above) onto one
+                            // number line: 0 = the shared entry point,
+                            // negative = still short of it (still on the
+                            // current edge), positive = already past it. The
+                            // nearest entity strictly ahead on that line is
+                            // this vehicle's real leader for gap purposes.
+                            double myPos = -(cur.length - v.distAlongEdge);
+                            bool foundLeader = false;
+                            double bestPos = 0, bestLen = 0, bestSpeed = 0;
+                            auto git = groups.find(nextKey);
                             if (git != groups.end() && !git->second.empty()) {
                                 Vehicle& rv = vehicles[git->second.front()];
-                                leaderGap = (cur.length - v.distAlongEdge) + rv.distAlongEdge - rv.length;
-                                leaderSpeed = rv.speed; hasLeader = true;
+                                bestPos = rv.distAlongEdge; bestLen = rv.length; bestSpeed = rv.speed;
+                                foundLeader = true;
+                            }
+                            auto mit = mergeApproachers.find(nextKey);
+                            if (mit != mergeApproachers.end()) {
+                                for (int otherVi : mit->second) {
+                                    if (otherVi == idxs[pos]) continue;
+                                    Vehicle& ov = vehicles[otherVi];
+                                    const RouteStep& ocur = ov.route[ov.routeIdx];
+                                    double otherPos = -(ocur.length - ov.distAlongEdge);
+                                    if (otherPos <= myPos) continue; // not ahead of us toward the merge point
+                                    if (!foundLeader || otherPos < bestPos) {
+                                        bestPos = otherPos; bestLen = ov.length; bestSpeed = ov.speed;
+                                        foundLeader = true;
+                                    }
+                                }
+                            }
+                            if (foundLeader) {
+                                leaderGap = (bestPos - bestLen) - myPos;
+                                leaderSpeed = bestSpeed; hasLeader = true;
                             } else if (nextLimit < v0) {
                                 // Anticipatory slowing for a slower segment
                                 // ahead with nothing actually queued there:
@@ -2442,7 +2539,54 @@ int main(int argc, char** argv) {
                             gateOk = jn2.signal.present && signalMode == SignalMode::Default &&
                                      computeLampColor(rg, je2.junctionIdx, je2.fromWayId, je2.movement, simClock) == "green";
                         }
+                        if (gateOk) {
+                            // A granted movement only means arbitration
+                            // considers this approach clear to enter - it
+                            // says nothing about whether the junction edge
+                            // ITSELF still has room. Vehicles from the SAME
+                            // approach are always "compatible" with each
+                            // other (movementsCompatible's rule 1), so
+                            // nothing else here limits how many can be
+                            // in-flight together on what's sometimes a very
+                            // short crossing - without this, a short junction
+                            // edge could keep accepting same-approach
+                            // vehicles faster than the far end can drain
+                            // them, stacking several on top of each other
+                            // with no physical room to space out. Same
+                            // treatment as the chain-to-chain check below.
+                            auto git = groups.find(edgeKey(nxt, 0));
+                            if (git != groups.end() && !git->second.empty()) {
+                                Vehicle& rv = vehicles[git->second.front()];
+                                if (rv.distAlongEdge - rv.length < v.length + v.minGap) gateOk = false;
+                            }
+                        }
                         if (!gateOk) { v.distAlongEdge = cur.length; break; }
+                    } else {
+                        // Hard capacity check for an ordinary chain-to-chain
+                        // transition. Step 4's IDM lookahead already tries to
+                        // decelerate a vehicle toward a stop when the next
+                        // lane is already occupied, but that's advisory only
+                        // - nothing previously stopped a vehicle with enough
+                        // residual speed (or simply a slightly-too-small
+                        // computed gap) from crossing into an already-packed
+                        // lane anyway, once distAlongEdge reached cur.length.
+                        // Repeated many times under sustained heavy load,
+                        // that let vehicles silently stack far closer than
+                        // any real gap - the severe same-point overlap seen
+                        // on this map's busiest chain edges. A junction's red
+                        // light already hard-blocks entry the same way (see
+                        // gateOk above); a plain lane deserves the same floor
+                        // instead of relying on braking alone to always be
+                        // enough.
+                        int nxtLane = desiredLaneForStep(rg, v.route, v.routeIdx + 1);
+                        auto git = groups.find(edgeKey(nxt, nxtLane));
+                        if (git != groups.end() && !git->second.empty()) {
+                            Vehicle& rv = vehicles[git->second.front()];
+                            if (rv.distAlongEdge - rv.length < v.length + v.minGap) {
+                                v.distAlongEdge = cur.length;
+                                break;
+                            }
+                        }
                     }
                     double overshoot = v.distAlongEdge - cur.length;
                     // Reservation bookkeeping for the NEXT unsignalized
