@@ -165,6 +165,14 @@ function liveSimConnect() {
     // with no extra round trip needed at stop time.
     if (msg.stats) LiveSim.lastStats = msg.stats;
 
+    // The engine sends one extra state tick with final:true right before it
+    // actually stops (see sim_engine.cpp's main()) - covers a run ending
+    // NATURALLY (--sim-seconds elapsed, or every trip completed) as well as
+    // a manual Stop, since liveSimStop's own showSimStatsModal call only
+    // ever fired for the latter. Both paths calling this is harmless -
+    // showSimStatsModal replaces any existing overlay rather than stacking.
+    if (msg.final && msg.stats) showSimStatsModal(msg.stats);
+
     // Keep a selected signalized node's inspector panel (see
     // liveSimRenderApproachWeights) current every tick, same reasoning as
     // liveSimRenderInfoPanel's own live refresh for a selected vehicle -
@@ -550,6 +558,15 @@ function showSimStatsModal(stats) {
       el("span", {}, "Trips completed"), el("span", {}, String(stats.completedTotal || 0))),
     el("div", { class: "sim-stats-row sim-stats-highlight" },
       el("span", {}, "Average trip time"), el("span", {}, fmtSec(stats.avgTripSec))),
+    // Two distinct numbers (see sim_engine.cpp's buildStateJson "stuckNow"/
+    // "stuckTotal" fields) - stuckNow is a snapshot of how many were stuck
+    // (magenta-dot, >5s stopped) at the exact moment this run ended;
+    // stuckTotal is how many DISTINCT vehicles were ever stuck at some
+    // point during the whole run, which is normally the larger number.
+    el("div", { class: "sim-stats-row" },
+      el("span", {}, "Vehicles stuck when the run ended"), el("span", {}, String(stats.stuckNow || 0))),
+    el("div", { class: "sim-stats-row" },
+      el("span", {}, "Vehicles stuck at some point"), el("span", {}, String(stats.stuckTotal || 0))),
   );
 
   const byType = stats.byType || {};
@@ -694,6 +711,7 @@ LiveSim.draw = function () {
   const groups = new Map(); // type -> vehicle[]
   const ambulances = [];
   const waiting = []; // Density mode's "red dot" queue state - see v.wt
+  const stuck = []; // stopped >5s - see v.stk
   for (const v of LiveSim.vehicles.values()) {
     const ty = LIVE_SIM_STYLE[v.ty] ? v.ty : "car";
     let arr = groups.get(ty);
@@ -701,6 +719,7 @@ LiveSim.draw = function () {
     arr.push(v);
     if (ty === "ambulance") ambulances.push(v);
     if (v.wt) waiting.push(v);
+    if (v.stk) stuck.push(v);
   }
 
   const halfW = cssW() + 40, halfH = cssH() + 40;
@@ -764,25 +783,24 @@ LiveSim.draw = function () {
     }
   }
 
-  // Density mode's "waiting for the light" dot (see sim_engine.cpp's
-  // Vehicle::waitingLight/buildStateJson's "wt" field): floats just above
-  // each waiting vehicle, chaining visually down a queue exactly as more
-  // vehicles join it. Green, not red, so it doesn't read as another red
-  // lamp/stop indicator next to the actual (red) signal glyphs.
-  if (waiting.length) {
+  // Floating dot just above a vehicle's own on-screen rotated rectangle -
+  // shared by the Density-mode "waiting for the light" dot (green, v.wt)
+  // and the "stuck in traffic >5s" dot (magenta, v.stk - see
+  // sim_engine.cpp's Vehicle::stoppedDurationSec/buildStateJson's "stk"
+  // field). Uses each vehicle's OWN rotated half-extent (not just half its
+  // length, which only matches when it's heading straight up/down on
+  // screen) so the dot sits right on top of the vehicle at any heading -
+  // for a vehicle heading east/west, "half length" would overshoot the
+  // real rendered body by a lot (its on-screen height is its WIDTH, not its
+  // length). Same forward/left screen-vector construction the main
+  // vehicle-quad loop above uses.
+  function liveSimDrawFloatingDots(vehiclesArr, color) {
+    if (!vehiclesArr.length) return;
     ctx.beginPath();
-    for (const v of waiting) {
+    for (const v of vehiclesArr) {
       const wp = liveSimVehicleWorldPos(v);
       const sp = worldToScreen(wp.x, wp.y);
       if (sp.x < -40 || sp.x > halfW || sp.y < -40 || sp.y > halfH) continue;
-      // On-screen vertical half-extent of the vehicle's OWN rotated
-      // rectangle (not just half its length, which only matches when it's
-      // heading straight up/down on screen) - otherwise, for a vehicle
-      // heading east/west, "half length" overshoots the real rendered body
-      // by a lot (its on-screen height is its WIDTH, not its length), which
-      // left the dot floating well clear of the actual vehicle instead of
-      // sitting on top of it. Same forward/left screen-vector construction
-      // the main vehicle-quad loop above uses.
       const tip = worldToScreen(wp.x + Math.cos(v.h), wp.y + Math.sin(v.h));
       const dx = tip.x - sp.x, dy = tip.y - sp.y;
       const dlen = Math.max(1e-6, Math.hypot(dx, dy));
@@ -796,9 +814,16 @@ LiveSim.draw = function () {
       ctx.moveTo(sp.x + r, dotY);
       ctx.arc(sp.x, dotY, r, 0, Math.PI * 2);
     }
-    ctx.fillStyle = "#06d6a0";
+    ctx.fillStyle = color;
     ctx.fill();
   }
+  // Green, not red, so the Density-mode queue dot doesn't read as another
+  // red lamp/stop indicator next to the actual (red) signal glyphs.
+  liveSimDrawFloatingDots(waiting, "#06d6a0");
+  // Magenta - a distinct color from every other live-sim marker (ambulance
+  // white/amber, waiting green, selection gold) so a genuinely stuck
+  // vehicle (not just briefly queued at a light) stands out at a glance.
+  liveSimDrawFloatingDots(stuck, "#ff00ff");
 
   liveSimDrawSelection();
 };
