@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  #landing{
+    height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:28px; background: var(--bg);
+  }
+  #landing h1{
+    font-size:22px; margin:0; color:var(--text); letter-spacing:.02em;
+  }
+  #landingCards{ display:flex; gap:20px; flex-wrap:wrap; justify-content:center; }
+  .landing-card{
+    display:flex; flex-direction:column; align-items:center; gap:10px;
+    width:220px; padding:24px 18px;
+    border:2px solid var(--border); border-radius: var(--radius);
+    background: var(--panel-bg); color:var(--text); text-decoration:none;
+    box-shadow: 4px 4px 0 var(--shadow);
+    transition: transform 0.1s, box-shadow 0.1s;
+  }
+  .landing-card:hover{ transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--shadow); background: var(--accent-light); }
+  .landing-card .icon{ font-size:38px; }
+  .landing-card .title{ font-size:15px; font-weight:700; }
+  .landing-card .desc{ font-size:12px; color:var(--muted); text-align:center; line-height:1.4; }
+</style>
+</head>
+<body>
+<div id="landing">
+  <h1>Traffic&nbsp;Map</h1>
+  <div id="landingCards">
+    <a class="landing-card" href="editor.html">
+      <span class="icon">✏️</span>
+      <span class="title">Editor</span>
+      <span class="desc">Map roads, buildings and amenities, assign vehicle fleets, and edit the layout.</span>
+    </a>
+    <a class="landing-card" href="simulation.html">
+      <span class="icon">🎬</span>
+      <span class="title">Simulation</span>
+      <span class="desc">Read-only viewer that plays back the traffic-light simulation over the current map.</span>
+    </a>
+  </div>
+</div>
+</body>
+</html>

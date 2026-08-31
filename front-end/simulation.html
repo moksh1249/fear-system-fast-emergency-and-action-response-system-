@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <button id="sidebarToggle" title="Toggle sidebar">☰</button>
+    <div class="brand">Traffic&nbsp;Simulation</div>
+
+    <div class="topbar-group">
+      <button id="zoomOutBtn" title="Zoom out">−</button>
+      <span id="zoomReadout">100%</span>
+      <button id="zoomInBtn" title="Zoom in">+</button>
+      <button id="fitBtn" title="Fit whole map in view">Fit</button>
+    </div>
+
+    <div class="topbar-group">
+      <span class="rotate-icon" title="Rotate map">⟳</span>
+      <input type="range" id="rotationSlider" min="-180" max="180" step="1" value="0" title="Rotate the map view">
+      <span id="rotationReadout">0°</span>
+      <button id="rotationResetBtn" title="Reset rotation to 0°">Reset</button>
+    </div>
+
+    <div class="topbar-group topbar-right">
+      <a class="tool-btn" href="editor.html" title="Open the map editor">✏️ Editor</a>
+      <button id="closeServerBtn" title="Shut down the local serve.py server">⏻ Close</button>
+    </div>
+  </header>
+
+  <div id="main-area">
+
+    <aside id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Simulation</div>
+        <button id="simPlayBtn" title="Play/pause the fixed-time traffic-light simulation">▶ Play</button>
+        <button id="simResetBtn" title="Reset the simulation clock to 0">↺ Sim Reset</button>
+
+        <div class="sim-clock-row">
+          <span id="simDurationLabel" class="sim-clock-value">00:00:00 elapsed</span>
+        </div>
+        <div class="sim-progress-track"><div id="simDurationBar" class="sim-progress-fill"></div></div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="simSpeedSlider">Fast-forward speed</label>
+          <div class="range-row">
+            <input type="range" id="simSpeedSlider" min="1" max="24" step="1" value="1">
+            <span id="simSpeedReadout" class="range-readout">1x</span>
+          </div>
+          <div class="sim-speed-presets">
+            <button type="button" class="sim-preset-btn" data-speed="1">1x</button>
+            <button type="button" class="sim-preset-btn" data-speed="5">5x</button>
+            <button type="button" class="sim-preset-btn" data-speed="10">10x</button>
+            <button type="button" class="sim-preset-btn" data-speed="24">24x</button>
+          </div>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="simDurationHoursInput">Duration (hours, 0 = unlimited)</label>
+          <input type="number" id="simDurationHoursInput" class="sim-number-input" min="0" step="0.5" value="0">
+        </div>
+      </div>
+
+      <div class="sidebar-section" id="liveSimSection">
+        <div class="sidebar-section-title">Live Vehicle Simulation (C++ engine)</div>
+        <div id="liveSimStatus" class="ext-ctrl-count">Engine: not running</div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimConcurrencyInput">Target concurrent vehicles</label>
+          <input type="number" id="liveSimConcurrencyInput" class="sim-number-input" min="1" max="10000" step="1" value="500">
+        </div>
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimSpeedInput">Playback speed (&times; real time)</label>
+          <input type="number" id="liveSimSpeedInput" class="sim-number-input" min="0.1" max="24" step="0.1" value="1">
+        </div>
+
+        <div class="checkrow" style="margin: 8px 0;">
+          <input type="checkbox" id="liveSimAdvancedAiChk">
+          <label for="liveSimAdvancedAiChk" title="Vehicles look up to 50m ahead and score both lanes before overtaking, instead of just reacting to the vehicle directly in front. More realistic, costs more CPU per vehicle - leave off on a lower-power machine.">🔬 Advanced lane AI (vision + mini-pathfinding)</label>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimSignalModeSelect">Signal-control mode</label>
+          <select id="liveSimSignalModeSelect" class="sim-number-input">
+            <option value="default">Default (fixed-time)</option>
+            <option value="density">Traffic-density-based</option>
+            <option value="emergency">Emergency-only preemption</option>
+          </select>
+        </div>
+
+        <div class="live-sim-btn-row">
+          <button id="liveSimStartBtn" title="Start the C++ simulation engine">▶ Start engine</button>
+          <button id="liveSimStopBtn" title="Stop the running simulation engine">◼ Stop engine</button>
+        </div>
+
+        <div id="liveSimReadout" class="ext-ctrl-hint"></div>
+      </div>
+
+      <div class="sidebar-section" id="extControlSection">
+        <div class="sidebar-section-title">External Control</div>
+        <div id="extControlCount" class="ext-ctrl-count">No active external control</div>
+        <div id="extControlList" class="ext-ctrl-list"></div>
+        <div class="ext-ctrl-hint">Select a traffic-light intersection on the map to take control of it for testing.</div>
+      </div>
+
+      <div class="sidebar-section" id="selectionFiltersSection">
+        <div class="sidebar-section-title">Selection Filters</div>
+        <div id="selectionFiltersContainer" style="display: flex; flex-direction: column; gap: 4px; max-height: 250px; overflow-y: auto; padding-right: 4px;">
+          <!-- Checkboxes generated dynamically in map-core.js -->
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">View</div>
+        <button id="arrowsToggleBtn" title="Show/hide one-way direction arrows">↗ Arrows</button>
+        <button id="timersToggleBtn" title="Show/hide traffic-light countdown timers">⏱ Timers</button>
+        <button id="buildingsToggleBtn" title="Show/hide buildings">🏢 Buildings</button>
+        <button id="amenitiesToggleBtn" title="Show/hide amenities">📍 Amenities</button>
+        <button id="settingsBtn" title="Simulation view settings">⚙ Settings</button>
+      </div>
+    </aside>
+
+    <main id="workspace">
+      <canvas id="mapCanvas"></canvas>
+
+      <div id="hint">Read-only viewer: drag to pan, scroll to zoom, click a feature to inspect it.</div>
+
+      <div id="toast" hidden></div>
+
+      <aside id="inspector" hidden>
+        <div class="insp-head">
+          <span id="inspTitle">Selection</span>
+          <button id="inspClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="inspBody"></div>
+      </aside>
+
+      <aside id="settingsPanel" hidden>
+        <div class="insp-head">
+          <span>Settings</span>
+          <button id="settingsClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="settingsBody"></div>
+      </aside>
+    </main>
+
+  </div>
+
+  <footer id="statusbar">
+    <span id="statTool">Simulation viewer (read-only)</span>
+    <span id="statCoords">lat --, lon --</span>
+    <span id="statCounts">-- nodes, -- roads</span>
+    <span id="statSelection"></span>
+  </footer>
+
+</div>
+
+<script src="map-core.js"></script>
+<script src="settings.js"></script>
+<script src="redlight.js"></script>
+<script src="sim-client.js"></script>
+<script src="simulation.js"></script>
+</body>
+</html>

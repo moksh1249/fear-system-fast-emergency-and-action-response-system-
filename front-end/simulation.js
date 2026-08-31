@@ -1,0 +1,367 @@
+"use strict";
+
+/* ============================================================
+   Traffic Simulation (read-only viewer)
+   Loaded by simulation.html, after map-core.js/settings.js/
+   redlight.js have already defined State/rendering/selection/the
+   fixed-time traffic-light simulation clock - see map-core.js's own
+   header comment for the full editor/simulation split rationale.
+
+   This file owns nothing that mutates the map: no tools, no
+   add/delete/move, no undo/redo, no save. It only:
+     - boots the page (loads map_data.json read-only)
+     - drives the camera (drag-to-pan; wheel-zoom/rotation/Play/
+       Reset/Settings/Selection-Filters are already wired by
+       map-core.js, shared with the editor)
+     - turns a plain click into a read-only selection via the same
+       hit-testing map-core.js already exposes, then displays it
+       through this file's own renderInspector() (setSelection, in
+       map-core.js, calls that name directly - editor.js defines the
+       real editing version on the editor page; this is the display
+       counterpart for this page, matched by name rather than by any
+       module import since these are plain global-scope scripts)
+   ============================================================ */
+
+function renderInspector() {
+  const panel = $("#inspector");
+  const body = $("#inspBody");
+
+  if (!State.selected.length) { panel.hidden = true; return; }
+  body.innerHTML = "";
+  // Vehicle selection (sim-client.js's liveSimRenderInfoPanel) shares this
+  // same panel but bypasses State.selected entirely - this marker is how the
+  // two sides avoid stomping on each other when switching between them (see
+  // liveSimClearVehicleSelection and the mouseup handler below).
+  panel.dataset.owner = "feature";
+
+  if (State.selected.length > 1) {
+    panel.hidden = false;
+    $("#inspTitle").textContent = `${State.selected.length} items selected`;
+    body.append(el("div", { class: "readonly" }, "Multiple items selected."));
+    return;
+  }
+
+  function tagsReadout(tags) {
+    const wrap = el("div", {});
+    wrap.append(el("div", { class: "section-title" }, "Tags"));
+    const keys = Object.keys(tags || {}).sort();
+    if (!keys.length) wrap.append(el("div", { class: "readonly" }, "(none)"));
+    for (const k of keys) {
+      wrap.append(el("div", { class: "field" }, el("label", {}, k), el("div", { class: "readonly" }, String(tags[k]))));
+    }
+    return wrap;
+  }
+
+  const sel = State.selected[0];
+
+  if (sel.type === "node") {
+    const node = State.nodes.get(sel.id);
+    if (!node) { panel.hidden = true; return; }
+    panel.hidden = false;
+    $("#inspTitle").textContent = `Intersection · ${sel.id}`;
+    const latlon = projectInverse(node.x, node.y);
+    body.append(
+      el("div", { class: "field" }, el("label", {}, "Position"),
+        el("div", { class: "readonly" }, `lat ${latlon.lat.toFixed(6)}, lon ${latlon.lon.toFixed(6)}`)),
+      el("div", { class: "field" }, el("label", {}, "Connected roads"),
+        el("div", { class: "readonly" }, String(connectedWaysSorted(sel.id).length))),
+    );
+    if (node.signal) {
+      body.append(renderExternalControlPanel(sel.id));
+      if (typeof liveSimRenderApproachWeights === "function") body.append(liveSimRenderApproachWeights(sel.id));
+    }
+    body.append(tagsReadout(node.tags));
+  } else if (sel.type === "way") {
+    const way = State.ways.get(sel.id);
+    if (!way) { panel.hidden = true; return; }
+    panel.hidden = false;
+    $("#inspTitle").textContent = `Road · ${sel.id}`;
+    body.append(
+      el("div", { class: "field" }, el("label", {}, "Type"),
+        el("div", { class: "readonly" }, (way.tags && way.tags.highway) || "(none)")),
+      el("div", { class: "field" }, el("label", {}, "Points"),
+        el("div", { class: "readonly" }, String(way.nodes.length))),
+    );
+    body.append(tagsReadout(way.tags));
+  } else if (sel.type === "building") {
+    const building = State.buildings.get(sel.id);
+    if (!building) { panel.hidden = true; return; }
+    panel.hidden = false;
+    $("#inspTitle").textContent = `Building · ${sel.id}`;
+    const centroid = polygonCentroid(building.polygon);
+    const latlon = projectInverse(centroid.x, centroid.y);
+    body.append(
+      el("div", { class: "field" }, el("label", {}, "Position (centroid)"),
+        el("div", { class: "readonly" }, `lat ${latlon.lat.toFixed(6)}, lon ${latlon.lon.toFixed(6)}`)),
+      el("div", { class: "field" }, el("label", {}, "Vertices"),
+        el("div", { class: "readonly" }, String(building.polygon.length))),
+    );
+    const linkedAmenity = Array.from(State.amenities.values()).find(a => a.buildingId === sel.id);
+    if (linkedAmenity) {
+      body.append(el("div", { class: "field" }, el("label", {}, "Linked amenity"), el("div", { class: "readonly" }, linkedAmenity.id)));
+    }
+    body.append(tagsReadout(building.tags));
+  } else if (sel.type === "amenity") {
+    const amenity = State.amenities.get(sel.id);
+    if (!amenity) { panel.hidden = true; return; }
+    panel.hidden = false;
+    $("#inspTitle").textContent = `Amenity · ${sel.id}`;
+    const latlon = projectInverse(amenity.x, amenity.y);
+    body.append(el("div", { class: "field" }, el("label", {}, "Position"),
+      el("div", { class: "readonly" }, `lat ${latlon.lat.toFixed(6)}, lon ${latlon.lon.toFixed(6)}`)));
+    if (amenity.buildingId && State.buildings.has(amenity.buildingId)) {
+      body.append(el("div", { class: "field" }, el("label", {}, "Linked building"), el("div", { class: "readonly" }, amenity.buildingId)));
+    }
+    body.append(tagsReadout(amenity.tags));
+
+    if (amenity.fleets && amenity.fleets.length) {
+      body.append(el("div", { class: "section-title" }, "Fleets"));
+      for (const fleet of amenity.fleets) {
+        const card = el("div", { class: "fleet-card" });
+        card.append(
+          el("div", { class: "field" }, el("label", {}, "Vehicle type"), el("div", { class: "readonly" }, fleet.vehicleType)),
+          el("div", { class: "field" }, el("label", {}, "Count"), el("div", { class: "readonly" }, String(fleet.vehicles.length))),
+        );
+        for (const veh of fleet.vehicles) {
+          card.append(el("div", { class: "vehicle-row" },
+            el("div", { class: "field" }, el("label", {}, "ID"), el("div", { class: "readonly" }, veh.id)),
+            el("div", { class: "field" }, el("label", {}, "Dimensions"),
+              el("div", { class: "readonly" }, `${veh.length}m × ${veh.width}m × ${veh.height}m, ${veh.weight}kg, max ${veh.maxSpeed}km/h`)),
+          ));
+        }
+        body.append(card);
+      }
+    }
+  } else {
+    panel.hidden = true;
+  }
+}
+
+// Builds an up-to-8-checkbox grid (one row per approach, one checkbox per
+// movement) - lets the user force ANY combination of lamps green, from a
+// single one of the 8 up to a whole custom phase, exactly matching what an
+// external script can do via greenLamps (see redlight.js's
+// requestSignalOverride/bothMovementsFor). `selectedLamps` (a greenLamps
+// array) pre-checks the matching boxes - pass the current override's own
+// list for the change-lamps form, or omit for none checked (fresh
+// take-control form).
+function buildLampCheckboxGrid(approaches, selectedLamps) {
+  const selectedSet = new Set((selectedLamps || []).map((g) => `${g.wayId}|${g.movement}`));
+  const grid = el("div", { class: "lamp-grid" });
+  const checkboxes = [];
+  approaches.forEach((a, i) => {
+    const row = el("div", { class: "lamp-grid-row" });
+    row.append(el("span", { class: "lamp-grid-label" }, `${a.wayId} (approach ${i + 1})`));
+    for (const movement of ["through", "right"]) {
+      const chk = el("input", { type: "checkbox" });
+      chk.checked = selectedSet.has(`${a.wayId}|${movement}`);
+      checkboxes.push({ wayId: a.wayId, movement, input: chk });
+      row.append(el("label", { class: "lamp-grid-chk" }, chk, movement === "through" ? "↑ Straight" : "↱ Right"));
+    }
+    grid.append(row);
+  });
+  return { grid, getSelectedLamps: () => checkboxes.filter((c) => c.input.checked).map((c) => ({ wayId: c.wayId, movement: c.movement })) };
+}
+
+// The manual "Test override" panel for a traffic-light intersection - takes
+// the exact same server round trips a real Python/C++ script would (see
+// redlight.js's requestSignalOverride/releaseManualOverride, and
+// backend/signal_control.py's module docstring for the full HTTP contract),
+// so this is a way to try the external-control feature out without writing
+// a script first - down to taking control of any single one of the (up to)
+// 8 lamps, or any combination of them (a whole phase), not just a whole
+// approach. When this page itself holds the override, it can also change
+// which lamps are forced without releasing first (requestSignalOverride
+// resends this page's own token, which the server treats as updating the
+// existing hold - see the "since" comment in serve.py's override handler).
+function renderExternalControlPanel(nodeId) {
+  const wrap = el("div", {});
+  wrap.append(el("div", { class: "section-title" }, "Traffic light · external control"));
+
+  const override = State.externalOverrides.get(nodeId);
+  const approaches = approachableWaysSorted(nodeId);
+
+  if (override) {
+    wrap.append(el("div", { class: "ext-ctrl-banner" },
+      `Under external control by "${override.controller}" - forcing: ${describeGreenLamps(override.greenLamps)}. This intersection's phase clock is frozen and will resume right where it left off once released.`));
+
+    const ownedHere = isManualOverrideOwner(nodeId);
+    if (ownedHere && approaches.length) {
+      const { grid, getSelectedLamps } = buildLampCheckboxGrid(approaches, override.greenLamps);
+      const changeBtn = el("button", {
+        onclick: async () => {
+          changeBtn.disabled = true;
+          changeBtn.textContent = "Switching...";
+          await requestSignalOverride(nodeId, getSelectedLamps(), "manual-test-ui");
+          renderInspector();
+        },
+      }, "⇄ Update forced lamps");
+      wrap.append(
+        el("div", { class: "field" }, el("label", {}, "Forced-green lamps (check any combination)"), grid),
+        changeBtn,
+      );
+    }
+
+    const releaseBtn = el("button", {
+      onclick: async () => {
+        releaseBtn.disabled = true;
+        releaseBtn.textContent = "Releasing...";
+        if (ownedHere) await releaseManualOverride(nodeId);
+        else await releaseSignalOverride(nodeId, null, true); // not ours - force it
+        renderInspector();
+      },
+    }, ownedHere ? "◼ Release control (test)" : "◼ Force-release (test)");
+    wrap.append(releaseBtn);
+    if (!ownedHere) {
+      wrap.append(el("div", { class: "readonly" },
+        "Held by another script/tab, so this page can't change its lamps - only release (or force-release) it and take control fresh."));
+    }
+    return wrap;
+  }
+
+  if (!approaches.length) {
+    wrap.append(el("div", { class: "readonly" }, "No approaches to force green."));
+    return wrap;
+  }
+  const { grid, getSelectedLamps } = buildLampCheckboxGrid(approaches);
+  const takeBtn = el("button", {
+    onclick: async () => {
+      takeBtn.disabled = true;
+      takeBtn.textContent = "Taking control...";
+      await requestSignalOverride(nodeId, getSelectedLamps(), "manual-test-ui");
+      renderInspector();
+    },
+  }, "▶ Take control (test override)");
+  wrap.append(
+    el("div", { class: "field" }, el("label", {}, "Lamps to force green (leave all unchecked to force all-red)"), grid),
+    takeBtn,
+    el("div", { class: "readonly" }, "This is the same request any external Python/C++ script uses - see backend/signal_control.py."),
+  );
+  return wrap;
+}
+
+/* ---------------- Pan (drag) + click-to-inspect ---------------- */
+
+let isPanning = false;
+let panLast = null;
+let mouseDownScreen = null;
+
+canvas.addEventListener("mousedown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  isPanning = true;
+  panLast = { sx, sy };
+  mouseDownScreen = { sx, sy };
+  canvas.classList.add("dragging");
+});
+
+canvas.addEventListener("mousemove", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const world = screenToWorld(sx, sy);
+  const latlon = projectInverse(world.x, world.y);
+  $("#statCoords").textContent = `lat ${latlon.lat.toFixed(5)}, lon ${latlon.lon.toFixed(5)}`;
+
+  if (isPanning && panLast) {
+    const before = screenToWorld(panLast.sx, panLast.sy);
+    const after = screenToWorld(sx, sy);
+    State.view.cx += before.x - after.x;
+    State.view.cy += before.y - after.y;
+    panLast = { sx, sy };
+    markDirty();
+  }
+});
+
+window.addEventListener("mouseup", (e) => {
+  if (!isPanning) return;
+  isPanning = false;
+  panLast = null;
+  canvas.classList.remove("dragging");
+
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const moved = mouseDownScreen ? Math.hypot(sx - mouseDownScreen.sx, sy - mouseDownScreen.sy) : Infinity;
+  mouseDownScreen = null;
+  if (moved >= 4) return; // a real drag, not a click - leave selection alone
+
+  const world = screenToWorld(sx, sy);
+
+  // An armed emergency-dispatch incident pick (see sim-client.js's
+  // liveSimBeginIncidentPick) consumes the very next map click regardless of
+  // what's under it - takes priority over vehicle/feature selection below.
+  if (window.LiveSim && LiveSim.pickingEmergencyForId != null) {
+    liveSimCompleteIncidentPick(world);
+    return;
+  }
+
+  // Live-simulation vehicles are their own independent, non-filterable
+  // overlay (see sim-client.js) - checked first since they render on top of
+  // everything else, and handled entirely through LiveSim.selectedId rather
+  // than State.selected/setSelection, so it never disturbs the ordinary
+  // node/way/building/amenity inspector below.
+  if (typeof liveSimFindVehicleAt === "function" && window.LiveSim && LiveSim.connected) {
+    const vehicleHit = liveSimFindVehicleAt(world, 10);
+    if (vehicleHit) { liveSimSelectVehicle(vehicleHit.id); return; }
+  }
+
+  const nodeHit = findNodeAtWithDist(world, 9);
+  const markerHit = findClusterMarkerAt(world, 9);
+  let nid = null;
+  if (nodeHit && (!markerHit || nodeHit.d <= markerHit.d)) nid = nodeHit.id;
+  else if (markerHit) nid = markerHit.id;
+  if (nid && !isItemSelectable("node", nid)) nid = null;
+
+  let aid = !nid ? findAmenityAt(world, 9) : null;
+  if (aid && !isItemSelectable("amenity", aid)) aid = null;
+  let wid = (!nid && !aid) ? findWayAt(world, 7) : null;
+  if (wid && !isItemSelectable("way", wid)) wid = null;
+  let bid = (!nid && !aid && !wid) ? findBuildingAt(world) : null;
+  if (bid && !isItemSelectable("building", bid)) bid = null;
+
+  if ((nid || aid || wid || bid) && typeof liveSimClearVehicleSelection === "function") liveSimClearVehicleSelection();
+  if (nid) setSelection([{ type: "node", id: nid }]);
+  else if (aid) setSelection([{ type: "amenity", id: aid }]);
+  else if (wid) setSelection([{ type: "way", id: wid }]);
+  else if (bid) setSelection([{ type: "building", id: bid }]);
+  else {
+    clearSelection();
+    if (typeof liveSimClearVehicleSelection === "function") liveSimClearVehicleSelection();
+  }
+});
+
+window.addEventListener("keydown", (e) => {
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.key === "Escape") { clearSelection(); return; }
+  if (e.key === "+" || e.key === "=") { zoomAt(cssW() / 2, cssH() / 2, 1.2); return; }
+  if (e.key === "-" || e.key === "_") { zoomAt(cssW() / 2, cssH() / 2, 1 / 1.2); return; }
+});
+
+/* ---------------- Bootstrap ---------------- */
+
+async function boot() {
+  loadConfig();
+  updateArrowsButton();
+  updateTimersButton();
+  updateBuildingsButton();
+  updateAmenitiesButton();
+  initSimControlsUI();
+  if (typeof initLiveSimUI === "function") initLiveSimUI();
+  updateRotationReadout();
+  initResizablePanel($("#inspector"), "inspectorWidth");
+  initResizablePanel($("#settingsPanel"), "settingsPanelWidth");
+  resizeCanvas();
+  renderSelectionFilters();
+  State.showEditingHandles = false;
+
+  try {
+    await loadFromUrl(DATA_URL);
+  } catch (err) {
+    toast("Could not load map_data.json — make sure this folder is served over http(s)://");
+    console.error(err);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+boot();
