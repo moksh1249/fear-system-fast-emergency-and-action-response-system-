@@ -96,12 +96,43 @@
           </select>
         </div>
 
+        <div class="checkrow" style="margin: 8px 0;">
+          <input type="checkbox" id="liveSimIncidentsChk" checked>
+          <label for="liveSimIncidentsChk" title="Periodically spawns a random emergency (fire/medical/accident/crime) as a marker on the map and a row in the Active Incidents list below. Click one to review it and pick how many of each vehicle type to send - the engine auto-dispatches the nearest available (not already responding) vehicles of each requested type.">🚨 Random emergency incidents</label>
+        </div>
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimIncidentIntervalInput">Spawn every N sim-minutes</label>
+          <input type="number" id="liveSimIncidentIntervalInput" class="sim-number-input" min="0.5" max="60" step="0.5" value="2">
+        </div>
+
         <div class="live-sim-btn-row">
           <button id="liveSimStartBtn" title="Start the C++ simulation engine">▶ Start engine</button>
           <button id="liveSimStopBtn" title="Stop the running simulation engine">◼ Stop engine</button>
         </div>
 
         <div id="liveSimReadout" class="ext-ctrl-hint"></div>
+      </div>
+
+      <div class="sidebar-section" id="incidentsSection">
+        <div class="sidebar-section-title incidents-toggle" id="incidentsToggle" title="Show/hide the Emergency Control panel">
+          <span>🚨 Emergency Control</span>
+          <span class="incidents-toggle-chevron" id="incidentsChevron">▾</span>
+        </div>
+        <div id="incidentsBody">
+          <div class="incident-create">
+            <select id="incidentCreateKind" class="sim-number-input" title="Which kind of emergency to create">
+              <option value="random">🎲 Random</option>
+              <option value="fire">🔥 Fire</option>
+              <option value="medical">🚑 Medical emergency</option>
+              <option value="accident">💥 Traffic accident</option>
+              <option value="crime">🚨 Crime in progress</option>
+            </select>
+            <button id="incidentCreateBtn" title="Arms a map click: the next point you click becomes this incident's location">+ Create</button>
+          </div>
+          <div id="incidentsCount" class="ext-ctrl-count">No active incidents</div>
+          <div id="incidentsList" class="incident-card-list"></div>
+          <div class="ext-ctrl-hint">Every active incident is listed here with its own dispatch controls - no need to click into one to act on it. Click "+ Create", then click the map to pinpoint a new one; a marker click on the map just highlights the matching card.</div>
+        </div>
       </div>
 
       <div class="sidebar-section" id="extControlSection">

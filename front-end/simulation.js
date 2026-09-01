@@ -294,6 +294,14 @@ window.addEventListener("mouseup", (e) => {
     return;
   }
 
+  // Same for an armed manual incident-CREATE pick (see sim-client.js's
+  // liveSimBeginIncidentCreatePick, the sidebar's "+ Create" button) -
+  // mutually exclusive with the one above (arming either cancels the other).
+  if (window.LiveSim && LiveSim.pickingIncidentKind != null) {
+    liveSimCompleteIncidentCreatePick(world);
+    return;
+  }
+
   // Live-simulation vehicles are their own independent, non-filterable
   // overlay (see sim-client.js) - checked first since they render on top of
   // everything else, and handled entirely through LiveSim.selectedId rather
@@ -302,6 +310,15 @@ window.addEventListener("mouseup", (e) => {
   if (typeof liveSimFindVehicleAt === "function" && window.LiveSim && LiveSim.connected) {
     const vehicleHit = liveSimFindVehicleAt(world, 10);
     if (vehicleHit) { liveSimSelectVehicle(vehicleHit.id); return; }
+  }
+
+  // Incident markers (see sim-client.js's LiveSim.incidents) are the same
+  // kind of independent, non-filterable overlay as vehicles above - checked
+  // right after them for the same reason (they render on top of ordinary
+  // map features).
+  if (typeof liveSimFindIncidentAt === "function" && window.LiveSim && LiveSim.connected) {
+    const incidentHit = liveSimFindIncidentAt(world, 10);
+    if (incidentHit) { liveSimSelectIncident(incidentHit.id); return; }
   }
 
   const nodeHit = findNodeAtWithDist(world, 9);
@@ -319,6 +336,7 @@ window.addEventListener("mouseup", (e) => {
   if (bid && !isItemSelectable("building", bid)) bid = null;
 
   if ((nid || aid || wid || bid) && typeof liveSimClearVehicleSelection === "function") liveSimClearVehicleSelection();
+  if ((nid || aid || wid || bid) && typeof liveSimClearIncidentSelection === "function") liveSimClearIncidentSelection();
   if (nid) setSelection([{ type: "node", id: nid }]);
   else if (aid) setSelection([{ type: "amenity", id: aid }]);
   else if (wid) setSelection([{ type: "way", id: wid }]);
@@ -326,6 +344,7 @@ window.addEventListener("mouseup", (e) => {
   else {
     clearSelection();
     if (typeof liveSimClearVehicleSelection === "function") liveSimClearVehicleSelection();
+    if (typeof liveSimClearIncidentSelection === "function") liveSimClearIncidentSelection();
   }
 });
 

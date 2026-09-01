@@ -404,6 +404,120 @@ body{
 .sim-stats-row span:last-child{ font-weight: 600; }
 .sim-stats-highlight span:last-child{ color: var(--accent); font-size: 14px; }
 
+/* Incident preset system (Phase 5) - the "Emergency Control" sidebar
+   section (#incidentsSection): a collapsible header, a manual "create
+   incident" control, and a scrollable list of fully self-contained incident
+   cards (icon/kind/age, description, per-type quantity inputs, Dispatch/
+   Dismiss) - see sim-client.js's liveSimRenderIncidentsList. Deliberately
+   the ONLY place incident detail/dispatch controls appear - no separate
+   panel to click into. Red-themed (vs. the violet #extControlSection above)
+   so it reads as "needs attention" rather than "something else has taken
+   control". */
+.incidents-toggle{
+  display:flex; align-items:center; justify-content:space-between;
+  cursor:pointer; user-select:none;
+}
+.incidents-toggle-chevron{ font-size:10px; transition: transform 0.15s; }
+.incidents-toggle-chevron.collapsed{ transform: rotate(-90deg); }
+
+.incident-create{
+  display:flex; gap:6px; margin-bottom:10px;
+}
+.incident-create select{ flex:1; min-width:0; }
+#sidebar .incident-create button{
+  display:inline-flex; width:auto; margin-bottom:0; white-space:nowrap;
+  padding: 7px 10px; font-size: 11px; font-weight:700;
+  background:#e63946; color:#fff; border-color:#e63946;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.3);
+}
+#sidebar .incident-create button:hover{ background:#c1121f; }
+
+.incident-card-list{
+  display:flex; flex-direction:column; gap:8px;
+  max-height: 420px; overflow-y:auto; padding-right:2px;
+}
+.incident-card{
+  background: rgba(230,57,70,0.18);
+  border: 2px solid #e63946; border-radius: var(--radius-sm);
+  padding: 8px 9px;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+}
+.incident-card.selected{
+  border-color: #ffd166;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.3), 0 0 0 2px #ffd166 inset;
+}
+.incident-card-head{ display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+.incident-card-icon{ font-size:14px; }
+.incident-card-label{
+  flex:1; min-width:0; font-weight:700; font-size:11px; color:#fff;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.incident-card-age{
+  font-size:10px; font-weight:600; color: rgba(255,255,255,0.65);
+  white-space:nowrap;
+}
+.incident-card-desc{
+  font-size:10.5px; font-weight:500; line-height:1.4;
+  color: rgba(255,255,255,0.75);
+  margin-bottom:6px;
+}
+.incident-card .incident-qty-row{
+  display:flex; align-items:center; justify-content:space-between;
+  gap: 8px;
+  padding: 3px 0;
+}
+.incident-card .incident-qty-row label{
+  font-size:10.5px; font-weight:600; color: rgba(255,255,255,0.85);
+}
+.incident-qty-input{ width: 56px; text-align:center; padding: 4px 6px; }
+.incident-card .incident-actions{
+  display:flex; justify-content:flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+#sidebar .incident-card .incident-actions button{
+  display:inline-flex; width:auto; margin-bottom:0;
+  padding: 5px 9px; font-size: 10.5px; font-weight:700;
+}
+#sidebar .incident-card .incident-actions button:last-child{
+  background:#e63946; color:#fff; border-color:#e63946;
+}
+#sidebar .incident-card .incident-actions button:last-child:hover{ background:#c1121f; }
+#sidebar .incident-card .incident-actions button:disabled{
+  opacity:0.6; cursor:default;
+}
+
+/* A "responding" incident card (see sim-client.js's liveSimBuildIncidentCard)
+   - the dispatched-vehicle list replacing the qty inputs once at least one
+   vehicle is confirmed dispatched. */
+.incident-card-status{
+  font-size:10.5px; font-weight:700; color:#ffd166;
+  margin-bottom:6px;
+}
+.incident-responders{ display:flex; flex-direction:column; gap:4px; }
+.incident-responder-row{
+  display:flex; align-items:center; gap:6px;
+  background: rgba(0,0,0,0.18);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+}
+.incident-responder-label{
+  flex:1; min-width:0; font-size:10.5px; font-weight:600; color:#fff;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.incident-responder-status{
+  font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em;
+  color: rgba(255,255,255,0.55);
+  white-space:nowrap;
+}
+#sidebar .incident-trace-btn{
+  display:inline-flex; width:auto; margin-bottom:0;
+  padding: 3px 7px; font-size: 9.5px; font-weight:700;
+  background:#fff; color:#1a1a2e; border-color:var(--border);
+  box-shadow: 1px 1px 0 rgba(0,0,0,0.3);
+}
+#sidebar .incident-trace-btn:hover{ background:#eee; }
+
 /* ============================================================
    INSPECTOR & SETTINGS PANELS (right overlays, full height)
    ============================================================ */

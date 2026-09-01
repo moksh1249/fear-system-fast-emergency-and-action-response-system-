@@ -265,9 +265,25 @@ static const TypeProfile& profileFor(const std::string& type) {
         {"bus", {1.4, 2.0, 1.5, 2.5}},
         {"truck", {1.2, 2.0, 1.5, 2.5}},
         {"ambulance", {3.2, 3.5, 0.9, 1.5}},
+        // Firetruck: heavy and not especially nimble (lower aMax/bComfort
+        // than a car), but still an urgent responder - slightly tighter
+        // headway than an ordinary truck, wider minGap than a car/ambulance
+        // since its own length makes a tight gap riskier to matter as much.
+        {"firetruck", {1.8, 2.2, 1.2, 2.2}},
+        // Police: the most aggressive profile of the 3 (pursuit-tuned) -
+        // tighter headway and higher accel than even the ambulance.
+        {"police", {3.6, 3.8, 0.85, 1.3}},
     };
     auto it = table.find(type);
     return it != table.end() ? it->second : table.at("car");
+}
+
+// Vehicle types capable of being dispatched to an emergency incident (see
+// sim_engine.cpp's triggerEmergency/dispatchIncident) - deliberately an
+// ALLOWLIST, not "anything that isn't car/bus/etc", so adding a new
+// ordinary vehicle type later never accidentally makes it dispatchable.
+static bool isEmergencyCapable(const std::string& vehicleType) {
+    return vehicleType == "ambulance" || vehicleType == "firetruck" || vehicleType == "police";
 }
 
 struct TripSpec {
@@ -278,7 +294,7 @@ struct TripSpec {
     // panel (see sim_engine.cpp's buildVehicleInfoJson) - never consumed by
     // the physics/routing here, so no default beyond "field absent" matters.
     double height = -1.0, weightKg = -1.0, driverAge = -1.0, responseTimeSec = -1.0;
-    std::string homeAmenityId, homeHospitalName; // empty = not an ambulance / no depot assigned
+    std::string homeAmenityId, homeDepotName; // empty = not an emergency-capable type / no depot assigned
 };
 
 static std::vector<TripSpec> loadTrips(const JsonValue& root) {
@@ -301,7 +317,7 @@ static std::vector<TripSpec> loadTrips(const JsonValue& root) {
         t.driverAge = v.num("driverAge").value_or(-1.0);
         t.responseTimeSec = v.num("responseTimeSec").value_or(-1.0);
         t.homeAmenityId = v.str("homeAmenityId").value_or("");
-        t.homeHospitalName = v.str("homeHospitalName").value_or("");
+        t.homeDepotName = v.str("homeDepotName").value_or("");
         out.push_back(std::move(t));
     }
     return out;
@@ -334,19 +350,20 @@ struct Vehicle {
     double arrivalAtStopLineTime = -1.0;
     int gate = 0; // 0 = n/a this tick, 1 = open, 2 = closed - only meaningful for an edge-group's front vehicle
 
-    // Emergency dispatch (manual "emergency state" toggle - see
-    // sim_engine.cpp's handleCommand::triggerEmergency) - independent of
-    // vehicleType=="ambulance" alone, per the "currently responding" flag
-    // the project's own status notes called for: a plain ambulance trip does
-    // NOT get preemption, only one actually dispatched to an incident does.
-    // emergencyPhase: 0 = not responding, 1 = en route to the incident, 2 =
-    // incident reached, en route to the home hospital - see sim_engine.cpp's
-    // main loop edge-transition step for how a vehicle moves from phase 1 to
-    // 2 instead of just ending its trip.
+    // Emergency dispatch ("emergency state" toggle, set by either a manual
+    // triggerEmergency or an auto dispatchIncident - see sim_engine.cpp's
+    // handleCommand) - independent of isEmergencyCapable(vehicleType) alone,
+    // per the "currently responding" flag the project's own status notes
+    // called for: a plain, non-dispatched ambulance/firetruck/police trip
+    // does NOT get preemption, only one actually dispatched to an incident
+    // does. emergencyPhase: 0 = not responding, 1 = en route to the
+    // incident, 2 = incident reached, en route to the home depot - see
+    // sim_engine.cpp's main loop edge-transition step for how a vehicle
+    // moves from phase 1 to 2 instead of just ending its trip.
     bool emergency = false;
     int emergencyPhase = 0;
     double dispatchTime = -1.0, incidentArrivalTime = -1.0;
-    std::string homeAmenityId; // copied from TripSpec at spawn - hospital lookup for the phase 1->2 handoff
+    std::string homeAmenityId; // copied from TripSpec at spawn - depot lookup for the phase 1->2 handoff
 
     // Density mode's "waiting for the light" state (see sim_engine.cpp's
     // main loop step 3) - a vehicle showing a red dot in the frontend, and

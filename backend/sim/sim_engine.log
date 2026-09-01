@@ -1,20 +1,55 @@
-[sim] road graph: 15595 nodes, 20149 chain edges, 20564 junction edges, 2843 junctions (4 signalized), 60 ways skipped (non-routable/invalid)
-[sim] CH graph: 25555 nodes
-[sim] loaded 10000 trip specs (setup 107.15 ms)
+[sim] road graph: 15217 nodes, 19640 chain edges, 20476 junction edges, 2829 junctions (41 signalized), 59 ways skipped (non-routable/invalid)
+[sim] CH graph: 24917 nodes
+[sim] loaded 10000 trip specs (setup 110.211 ms)
 [sim] websocket server listening on ws://127.0.0.1:8766
-[sim t=0.0s] active=5 spawned=5/10000 completed=0 avgSpeed=0.4km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
-[sim t=10.0s] active=1005 spawned=1005/10000 completed=0 avgSpeed=29.7km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
-[sim] WARN vehicle 1355 route failed: start/end node not in CH graph
-[sim] WARN vehicle 1990 route failed: start/end node not in CH graph
-[sim t=20.0s] active=2003 spawned=2005/10000 completed=0 avgSpeed=33.1km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=2 wsClients=1
-[sim t=30.0s] active=3002 spawned=3005/10000 completed=1 avgSpeed=32.4km/h avgTrip=20.4s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=2 wsClients=1
-[sim t=40.0s] active=4005 spawned=4010/10000 completed=3 avgSpeed=30.5km/h avgTrip=23.9s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=2 wsClients=1
-[sim] WARN vehicle 4618 route failed: start/end node not in CH graph
-[sim t=50.0s] active=4998 spawned=5010/10000 completed=9 avgSpeed=27.3km/h avgTrip=31.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=60.0s] active=5000 spawned=5024/10000 completed=21 avgSpeed=25.6km/h avgTrip=38.7s avgAmbTrip=45.1s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=70.0s] active=5000 spawned=5032/10000 completed=29 avgSpeed=23.1km/h avgTrip=42.8s avgAmbTrip=45.1s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=80.0s] active=5000 spawned=5041/10000 completed=38 avgSpeed=21.3km/h avgTrip=46.2s avgAmbTrip=45.1s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=90.0s] active=5000 spawned=5068/10000 completed=65 avgSpeed=19.9km/h avgTrip=52.5s avgAmbTrip=57.2s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=100.0s] active=5000 spawned=5098/10000 completed=95 avgSpeed=18.9km/h avgTrip=59.0s avgAmbTrip=57.2s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=110.0s] active=5000 spawned=5131/10000 completed=128 avgSpeed=18.0km/h avgTrip=65.0s avgAmbTrip=57.2s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
-[sim t=120.0s] active=5000 spawned=5156/10000 completed=153 avgSpeed=17.3km/h avgTrip=69.8s avgAmbTrip=57.2s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=3 wsClients=1
+[sim t=0.0s] active=1 spawned=1/10000 completed=0 avgSpeed=0.4km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=10.0s] active=201 spawned=201/10000 completed=0 avgSpeed=30.4km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=20.0s] active=401 spawned=401/10000 completed=0 avgSpeed=34.8km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=30.0s] active=601 spawned=601/10000 completed=0 avgSpeed=36.3km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=40.0s] active=801 spawned=802/10000 completed=1 avgSpeed=36.3km/h avgTrip=26.1s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=50.0s] active=900 spawned=903/10000 completed=3 avgSpeed=37.8km/h avgTrip=40.1s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim] dispatchIncident: ambulance requested=1 dispatched=1 -> incident near node 9168986478
+[sim t=60.0s] active=900 spawned=907/10000 completed=7 avgSpeed=36.7km/h avgTrip=42.8s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=70.0s] active=900 spawned=913/10000 completed=13 avgSpeed=36.9km/h avgTrip=42.4s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=80.0s] active=900 spawned=914/10000 completed=14 avgSpeed=35.7km/h avgTrip=42.7s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=90.0s] active=900 spawned=922/10000 completed=22 avgSpeed=34.7km/h avgTrip=53.4s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=100.0s] active=900 spawned=930/10000 completed=30 avgSpeed=35.2km/h avgTrip=58.5s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=110.0s] active=900 spawned=939/10000 completed=39 avgSpeed=33.9km/h avgTrip=63.4s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=120.0s] active=900 spawned=951/10000 completed=51 avgSpeed=31.7km/h avgTrip=70.2s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=130.0s] active=900 spawned=963/10000 completed=63 avgSpeed=31.4km/h avgTrip=77.9s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=140.0s] active=900 spawned=970/10000 completed=70 avgSpeed=30.5km/h avgTrip=82.2s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=150.0s] active=900 spawned=979/10000 completed=79 avgSpeed=28.8km/h avgTrip=87.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=160.0s] active=900 spawned=994/10000 completed=94 avgSpeed=29.1km/h avgTrip=94.5s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=170.0s] active=900 spawned=1005/10000 completed=105 avgSpeed=28.9km/h avgTrip=99.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=180.0s] active=900 spawned=1020/10000 completed=120 avgSpeed=27.3km/h avgTrip=105.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=190.0s] active=900 spawned=1034/10000 completed=134 avgSpeed=27.3km/h avgTrip=110.9s avgAmbTrip=151.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=200.0s] active=900 spawned=1053/10000 completed=153 avgSpeed=25.7km/h avgTrip=118.1s avgAmbTrip=158.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=210.0s] active=900 spawned=1067/10000 completed=167 avgSpeed=26.0km/h avgTrip=121.6s avgAmbTrip=158.9s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=220.0s] active=900 spawned=1083/10000 completed=183 avgSpeed=24.9km/h avgTrip=126.1s avgAmbTrip=158.9s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=230.0s] active=900 spawned=1102/10000 completed=202 avgSpeed=24.1km/h avgTrip=132.5s avgAmbTrip=158.9s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=240.0s] active=900 spawned=1118/10000 completed=218 avgSpeed=23.0km/h avgTrip=138.1s avgAmbTrip=158.9s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=250.0s] active=900 spawned=1123/10000 completed=223 avgSpeed=23.0km/h avgTrip=139.8s avgAmbTrip=175.3s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=260.0s] active=900 spawned=1142/10000 completed=242 avgSpeed=22.1km/h avgTrip=146.6s avgAmbTrip=175.3s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=270.0s] active=900 spawned=1158/10000 completed=258 avgSpeed=21.4km/h avgTrip=151.8s avgAmbTrip=175.3s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=280.0s] active=900 spawned=1168/10000 completed=268 avgSpeed=21.1km/h avgTrip=154.9s avgAmbTrip=175.3s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=290.0s] active=900 spawned=1180/10000 completed=280 avgSpeed=20.3km/h avgTrip=158.0s avgAmbTrip=188.6s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=300.0s] active=900 spawned=1196/10000 completed=296 avgSpeed=19.2km/h avgTrip=161.0s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=310.0s] active=900 spawned=1206/10000 completed=306 avgSpeed=19.2km/h avgTrip=164.6s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=320.0s] active=900 spawned=1214/10000 completed=314 avgSpeed=19.7km/h avgTrip=166.9s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=330.0s] active=900 spawned=1222/10000 completed=322 avgSpeed=19.6km/h avgTrip=169.4s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=340.0s] active=900 spawned=1242/10000 completed=342 avgSpeed=18.1km/h avgTrip=175.3s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=350.0s] active=900 spawned=1259/10000 completed=359 avgSpeed=17.6km/h avgTrip=180.7s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=360.0s] active=900 spawned=1276/10000 completed=376 avgSpeed=16.4km/h avgTrip=184.3s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=370.0s] active=900 spawned=1284/10000 completed=384 avgSpeed=16.3km/h avgTrip=185.4s avgAmbTrip=200.8s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=380.0s] active=900 spawned=1302/10000 completed=402 avgSpeed=15.9km/h avgTrip=189.8s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=390.0s] active=900 spawned=1311/10000 completed=411 avgSpeed=14.9km/h avgTrip=192.1s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=400.0s] active=900 spawned=1324/10000 completed=424 avgSpeed=13.7km/h avgTrip=195.1s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=410.0s] active=900 spawned=1335/10000 completed=435 avgSpeed=13.8km/h avgTrip=196.8s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=420.0s] active=900 spawned=1344/10000 completed=444 avgSpeed=13.4km/h avgTrip=199.6s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=430.0s] active=900 spawned=1352/10000 completed=452 avgSpeed=13.4km/h avgTrip=200.2s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=440.0s] active=900 spawned=1361/10000 completed=461 avgSpeed=14.4km/h avgTrip=202.2s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=450.0s] active=900 spawned=1375/10000 completed=475 avgSpeed=13.8km/h avgTrip=206.0s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=460.0s] active=900 spawned=1386/10000 completed=486 avgSpeed=13.0km/h avgTrip=209.7s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=470.0s] active=899 spawned=1398/10000 completed=499 avgSpeed=12.1km/h avgTrip=213.2s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=480.0s] active=900 spawned=1413/10000 completed=513 avgSpeed=11.5km/h avgTrip=214.6s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1
+[sim t=490.0s] active=900 spawned=1418/10000 completed=518 avgSpeed=12.1km/h avgTrip=214.9s avgAmbTrip=235.7s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=1

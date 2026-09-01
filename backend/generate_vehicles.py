@@ -19,13 +19,19 @@ implied by ways[].nodes (ignoring oneway) - a deliberately cheap
 approximation of true directed reachability, good enough to rule out actual
 islands without needing a full graph-search per candidate pair.
 
-Ambulances are pinned to a home depot: every amenity tagged amenity=hospital,
-plus (to also catch hospitals that only exist as a building footprint, not a
-point amenity) every building tagged building=hospital not already linked to
-one of those amenities. Each ambulance's start is the routable node nearest
-its assigned depot - this is the same depot list the future emergency-dispatch
-system (Phase 5) will read hospitals from, so the generator and the engine
-agree on what "a hospital" is from day one.
+Ambulance/firetruck/police (the 3 emergency-capable types - see Phase 5's
+dispatchIncident in sim_engine.cpp) are each pinned to a home depot: every
+amenity of the matching type (amenity=hospital / fire_station / police),
+plus (to also catch a hospital that only exists as a building footprint, not
+a point amenity - ambulances only, the other two types don't have an
+equivalent OSM building convention) every building tagged building=hospital
+not already linked to one of those amenities. This map has no fire_station
+amenities at all, so firetrucks fall back to depoting at the police
+amenities instead (and vice versa if police were ever missing) - see
+find_depots(). Each emergency vehicle's start is the routable node nearest
+its assigned depot - this is the same depot list Phase 5's engine-side
+dispatch reads homes from, so the generator and the engine agree on what "a
+depot" is from day one.
 
 `driverAge`/`responseTimeSec`/`weight`/`length`/`width` etc. are generated now
 per the project plan's own instruction that they're for FUTURE simulations -
@@ -60,7 +66,14 @@ DEFAULT_VEHICLE_MIX = {
     "bus": 0.03,
     "truck": 0.03,
     "ambulance": 0.02,
+    "firetruck": 0.015,
+    "police": 0.015,
 }
+
+# The 3 vehicle types dispatchable to an incident (Phase 5) - kept in one
+# place so generator and engine-facing bits (round-robin depot assignment,
+# response-time tuning) don't drift out of sync with each other.
+EMERGENCY_TYPES = ("ambulance", "firetruck", "police")
 
 # Per-type (min, max) ranges a real-world vehicle of that type would
 # plausibly fall into. maxSpeedKmh is the VEHICLE's own capability ceiling,
@@ -80,6 +93,8 @@ VEHICLE_PROFILES = {
     "bus":        {"length": (7.0, 10.0), "width": (2.4, 2.6), "height": (3.0, 3.6), "weightKg": (8000, 14000), "maxSpeedKmh": (60, 85), "accelMps2": (0.8, 1.4)},
     "truck":      {"length": (6.0, 12.0), "width": (2.3, 2.6), "height": (2.5, 3.8), "weightKg": (5000, 16000), "maxSpeedKmh": (60, 80), "accelMps2": (0.7, 1.3)},
     "ambulance":  {"length": (5.5, 6.5), "width": (2.0, 2.3), "height": (2.4, 2.85), "weightKg": (2500, 4500), "maxSpeedKmh": (100, 130), "accelMps2": (2.6, 3.6)},
+    "firetruck":  {"length": (8.5, 11.0), "width": (2.4, 2.6), "height": (3.0, 3.4), "weightKg": (12000, 20000), "maxSpeedKmh": (80, 100), "accelMps2": (1.6, 2.4)},
+    "police":     {"length": (4.5, 5.0), "width": (1.8, 2.0), "height": (1.45, 1.65), "weightKg": (1600, 2200), "maxSpeedKmh": (110, 140), "accelMps2": (3.0, 4.2)},
 }
 
 MIN_DRIVER_AGE, MAX_DRIVER_AGE = 16, 80
@@ -237,8 +252,11 @@ def dist(nodes, a, b):
 
 
 # ---------------------------------------------------------------------------
-# Ambulance depots: every hospital amenity, plus any hospital BUILDING not
-# already covered by one of those amenities (see module docstring).
+# Depots: every amenity of a matching type (amenity_tag, e.g. "hospital"),
+# plus - hospitals only, no equivalent OSM convention exists for the other
+# 2 types - any building of a matching building_tag not already covered by
+# one of those amenities. Shared by all 3 emergency-capable types (see
+# module docstring); label is just for a friendlier fallback name/log line.
 # ---------------------------------------------------------------------------
 
 def polygon_centroid(polygon):
@@ -247,28 +265,29 @@ def polygon_centroid(polygon):
     return {"x": sum(xs) / len(xs), "y": sum(ys) / len(ys)}
 
 
-def find_hospital_depots(map_data, routable_nodes, nodes):
+def find_depots(map_data, routable_nodes, nodes, amenity_tag, label, building_tag=None):
     amenities = map_data.get("amenities") or []
     buildings = map_data.get("buildings") or []
 
     depots = []
     covered_building_ids = set()
     for a in amenities:
-        if (a.get("tags") or {}).get("amenity") != "hospital":
+        if (a.get("tags") or {}).get("amenity") != amenity_tag:
             continue
-        name = (a.get("tags") or {}).get("name") or f"Hospital (amenity {a['id']})"
+        name = (a.get("tags") or {}).get("name") or f"{label} (amenity {a['id']})"
         depots.append({"id": a["id"], "name": name, "x": a["x"], "y": a["y"]})
         if a.get("buildingId"):
             covered_building_ids.add(a["buildingId"])
 
-    for b in buildings:
-        if (b.get("tags") or {}).get("building") != "hospital":
-            continue
-        if b["id"] in covered_building_ids:
-            continue
-        name = (b.get("tags") or {}).get("name") or f"Hospital (building {b['id']})"
-        centroid = polygon_centroid(b["polygon"])
-        depots.append({"id": b["id"], "name": name, "x": centroid["x"], "y": centroid["y"]})
+    if building_tag:
+        for b in buildings:
+            if (b.get("tags") or {}).get("building") != building_tag:
+                continue
+            if b["id"] in covered_building_ids:
+                continue
+            name = (b.get("tags") or {}).get("name") or f"{label} (building {b['id']})"
+            centroid = polygon_centroid(b["polygon"])
+            depots.append({"id": b["id"], "name": name, "x": centroid["x"], "y": centroid["y"]})
 
     depots.sort(key=lambda d: str(d["id"]))  # deterministic order for reproducible round-robin assignment
 
@@ -285,6 +304,24 @@ def find_hospital_depots(map_data, routable_nodes, nodes):
         depot["nodeId"] = best_id
 
     return depots
+
+
+# Depot groups for the 3 emergency-capable types, keyed by vehicleType. Fire
+# and police share depot lists via a fallback when this map has none of one
+# of the two (see module docstring) - literally the same list object in that
+# case, so per-type usage counts (see generate()) land on the same dicts and
+# meta.depots doesn't end up with duplicate entries for one real depot.
+def find_emergency_depot_groups(map_data, routable_nodes, nodes):
+    hospital_depots = find_depots(map_data, routable_nodes, nodes, "hospital", "Hospital", building_tag="hospital")
+    fire_depots = find_depots(map_data, routable_nodes, nodes, "fire_station", "Fire station")
+    police_depots = find_depots(map_data, routable_nodes, nodes, "police", "Police station")
+    if not fire_depots and police_depots:
+        print("[generate_vehicles] no fire_station amenities found - firetrucks will depot at police stations instead.", file=sys.stderr)
+        fire_depots = police_depots
+    if not police_depots and fire_depots:
+        print("[generate_vehicles] no police amenities found - police cars will depot at fire stations instead.", file=sys.stderr)
+        police_depots = fire_depots
+    return {"ambulance": hospital_depots, "firetruck": fire_depots, "police": police_depots}
 
 
 # ---------------------------------------------------------------------------
@@ -323,12 +360,12 @@ def random_in_range(rng, lo_hi):
     return round(rng.uniform(lo, hi), 2)
 
 
-def make_response_time(rng, age, is_ambulance):
+def make_response_time(rng, age, is_emergency_driver):
     # Baseline perception-reaction time, worse for very young (less
-    # experience) and older (slower reflexes) drivers; trained ambulance
-    # drivers get a faster baseline. Not consumed by any simulation logic
-    # yet - see module docstring.
-    base = 0.55 if is_ambulance else 0.75
+    # experience) and older (slower reflexes) drivers; trained emergency
+    # (ambulance/firetruck/police) drivers get a faster baseline. Not
+    # consumed by any simulation logic yet - see module docstring.
+    base = 0.55 if is_emergency_driver else 0.75
     if age < 21:
         base += 0.15 * (21 - age) / 5
     elif age > 65:
@@ -347,43 +384,47 @@ def generate(map_data, count, seed, min_trip_m, vehicle_mix):
         raise ValueError("road graph has fewer than 2 connected routable nodes - can't generate trips")
     routable_set = set(routable_list)
 
-    depots = find_hospital_depots(map_data, routable_list, nodes)
+    depot_groups = find_emergency_depot_groups(map_data, routable_list, nodes)
 
     counts = apportion_counts(count, vehicle_mix)
-    if depots and counts.get("ambulance", 0) > 0:
-        pass  # depots exist, fine - ambulances below get real homes
-    elif counts.get("ambulance", 0) > 0:
-        print("[generate_vehicles] WARNING: no hospitals found in map_data.json - "
-              "ambulances will get a random start instead of a depot home.", file=sys.stderr)
+    for etype in EMERGENCY_TYPES:
+        if counts.get(etype, 0) > 0 and not depot_groups[etype]:
+            print(f"[generate_vehicles] WARNING: no depot found for '{etype}' - those "
+                  f"vehicles will get a random start instead of a depot home.", file=sys.stderr)
 
     type_list = []
     for vtype, n in counts.items():
         type_list.extend([vtype] * n)
     rng.shuffle(type_list)
 
-    # Deterministic, evenly-spread round-robin across depots (in their
-    # already-sorted, stable order) rather than a random pick per ambulance -
-    # keeps depot coverage balanced regardless of RNG luck.
-    ambulance_depot_cursor = 0
-    depot_ambulance_counts = {d["id"]: 0 for d in depots}
+    # Deterministic, evenly-spread round-robin across each type's own depot
+    # list (in its already-sorted, stable order) rather than a random pick
+    # per vehicle - keeps depot coverage balanced regardless of RNG luck.
+    # One cursor + usage-count dict per emergency type; fire/police may share
+    # the SAME depot dicts (find_emergency_depot_groups' fallback when this
+    # map is missing one of the two), so their counts land on the same
+    # object below instead of being tracked against two separate lists.
+    depot_cursors = {etype: 0 for etype in EMERGENCY_TYPES}
+    depot_usage_counts = {etype: {d["id"]: 0 for d in depot_groups[etype]} for etype in EMERGENCY_TYPES}
 
     vehicles = []
     trip_distances = []
     for i, vtype in enumerate(type_list, start=1):
         profile = VEHICLE_PROFILES[vtype]
         home_amenity_id = None
-        home_hospital_name = None
+        home_depot_name = None
 
-        if vtype == "ambulance" and depots:
-            depot = depots[ambulance_depot_cursor % len(depots)]
-            ambulance_depot_cursor += 1
-            depot_ambulance_counts[depot["id"]] += 1
+        depots_for_type = depot_groups.get(vtype)
+        if vtype in EMERGENCY_TYPES and depots_for_type:
+            depot = depots_for_type[depot_cursors[vtype] % len(depots_for_type)]
+            depot_cursors[vtype] += 1
+            depot_usage_counts[vtype][depot["id"]] += 1
             start = depot["nodeId"]
             end = start
             while end == start:
                 end = rng.choice(routable_list)
             home_amenity_id = depot["id"]
-            home_hospital_name = depot["name"]
+            home_depot_name = depot["name"]
         else:
             start, end = sample_trip_endpoints(rng, routable_list, nodes, min_trip_m)
 
@@ -405,12 +446,19 @@ def generate(map_data, count, seed, min_trip_m, vehicle_mix):
             "driverAge": rng.randint(MIN_DRIVER_AGE, MAX_DRIVER_AGE),
             "responseTimeSec": None,  # filled below, needs driverAge
             "homeAmenityId": home_amenity_id,
-            "homeHospitalName": home_hospital_name,
+            "homeDepotName": home_depot_name,
         })
-        vehicles[-1]["responseTimeSec"] = make_response_time(rng, vehicles[-1]["driverAge"], vtype == "ambulance")
+        vehicles[-1]["responseTimeSec"] = make_response_time(rng, vehicles[-1]["driverAge"], vtype in EMERGENCY_TYPES)
 
-    for d in depots:
-        d["ambulanceCount"] = depot_ambulance_counts.get(d["id"], 0)
+    # Merge the 3 (possibly-overlapping - see find_emergency_depot_groups)
+    # depot groups into one deduped list for meta.depots, keyed by id so a
+    # fire/police-shared depot appears once with both usage counts on it.
+    all_depots = {}
+    for etype in EMERGENCY_TYPES:
+        for d in depot_groups[etype]:
+            merged = all_depots.setdefault(d["id"], dict(d))
+            merged[f"{etype}Count"] = depot_usage_counts[etype].get(d["id"], 0)
+    depots = sorted(all_depots.values(), key=lambda d: str(d["id"]))
 
     meta = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -434,7 +482,7 @@ def generate(map_data, count, seed, min_trip_m, vehicle_mix):
 CSV_FIELDS = [
     "id", "vehicleType", "startNodeId", "endNodeId", "startX", "startY", "endX", "endY",
     "length", "width", "height", "weightKg", "maxSpeedKmh", "accelMps2", "driverAge", "responseTimeSec",
-    "homeAmenityId", "homeHospitalName",
+    "homeAmenityId", "homeDepotName",
 ]
 
 
@@ -499,10 +547,13 @@ def main(argv=None):
     print(f"  {csv_path}")
     print(f"[generate_vehicles] routable nodes: {meta['routableNodeCount']} / {meta['totalNodeCount']} total")
     print(f"[generate_vehicles] type counts: {counts}")
-    print(f"[generate_vehicles] hospitals detected: {len(meta['depots'])}")
+    print(f"[generate_vehicles] depots detected: {len(meta['depots'])}")
     for d in meta["depots"]:
-        if d["ambulanceCount"]:
-            print(f"    {d['name']} ({d['id']}) -> {d['ambulanceCount']} ambulance(s), home node {d['nodeId']}")
+        usage = ", ".join(
+            f"{d[f'{etype}Count']} {etype}(s)" for etype in EMERGENCY_TYPES if d.get(f"{etype}Count")
+        )
+        if usage:
+            print(f"    {d['name']} ({d['id']}) -> {usage}, home node {d['nodeId']}")
     if trip_distances:
         print(f"[generate_vehicles] straight-line trip distance (m): "
               f"min={min(trip_distances):.1f} max={max(trip_distances):.1f} "

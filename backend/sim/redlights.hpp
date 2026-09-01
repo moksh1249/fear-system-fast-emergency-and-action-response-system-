@@ -188,12 +188,15 @@ static GroupTurnInfo getGroupTurnInfo(const RedlightGroupConfig& g, double clock
 // sim_engine.cpp's handleCommand).
 //   - EmergencyOnly: a signalized junction runs the EXACT SAME fixed-time
 //     math as Default mode (computeLampColor, complete with its normal
-//     phase timer) UNLESS an EmergencyReport has been submitted for this
-//     tick naming one of its approaches (see sim_engine.cpp's main loop step
-//     3 and handleCommand's triggerEmergency - a manual "responding" toggle,
+//     phase timer) UNLESS one of its approaches is currently held under
+//     preemption (see sim_engine.cpp's main loop step 3 and handleCommand's
+//     triggerEmergency/dispatchIncident - a manual/auto "responding" toggle,
 //     deliberately distinct from merely being vehicleType=="ambulance"), in
 //     which case that whole approach is forced green and every other
-//     approach forced red for as long as the report keeps naming it - real
+//     approach forced red. Preemption engages ahead of arrival (once a
+//     responding vehicle's estimated time to reach the junction drops under
+//     a lead threshold, not only once it's already sitting at the line) and
+//     releases a fixed grace period after it finishes crossing - real
 //     Opticom-style preemption, not a rank bonus fed into ordinary
 //     arbitration. See sim_engine.cpp's buildStateJson (which is why a
 //     NON-preempted EmergencyOnly junction is deliberately left out of its
@@ -282,12 +285,83 @@ struct VehicleStopReport {
     double waitStartTime = -1;
 };
 
-// An ambulance's self-report while "responding" (see handleCommand's
-// triggerEmergency) and at the front of an approach queue leading into a
-// signalized junction.
+// An emergency-capable vehicle's (ambulance/firetruck/police) self-report
+// while "responding" (see handleCommand's triggerEmergency/dispatchIncident)
+// and either approaching a signalized junction within the preemption lead
+// time or currently transiting one - see sim_engine.cpp's main loop step 3
+// for how both cases are detected via a route lookahead + ETA estimate,
+// rather than only reacting once the vehicle is already sitting at the line.
 struct EmergencyReport {
     std::string fromWayId;
+    // The exact movement/departure+arrival-direction the emergency vehicle
+    // is using - carried through purely so a caller can ask "is THIS other
+    // approach actually a real conflict with that" (via road_graph.hpp's
+    // movementsCompatible, which this module deliberately never calls
+    // itself - see this file's own header comment on why it stays free of
+    // RoadGraph). What that buys: an Active preemption only needs to force
+    // red the approaches that would genuinely collide with the priority
+    // movement, not blanket-stop every other one - see PreemptStatus's own
+    // comment for why that matters in practice.
+    std::string movement, toWayId;
+    double arrDirX = 0, arrDirY = 0;
     double gpsX = 0, gpsY = 0;
+    // Only actually adopted by RedlightController::reportEmergency on a
+    // FRESH preemption episode for this junction (never pushed later by a
+    // repeat report the way holdUntilSimClock is) - the deadline at which
+    // Clearing hands off to Active. See PreemptPhase's own comment.
+    double clearUntilSimClock = 0.0;
+    // Preemption for this approach stays active until at least this sim-
+    // clock time, even with no further report - see
+    // RedlightController::reportEmergency's own comment for why a plain
+    // per-tick refresh of this deadline is enough to make preemption behave
+    // as "on continuously for as long as it's still needed, plus a fixed
+    // grace period after the last tick it was".
+    double holdUntilSimClock = 0.0;
+};
+
+// The two phases a preempted junction now proceeds through, requested by the
+// user so conflicting traffic gets a warning window instead of an instant
+// stop when preemption engages. Both phases force the preempted approach
+// itself open (see sim_engine.cpp's main loop step 3 and buildStateJson) -
+// the emergency vehicle is NEVER made to wait on its own preemption, in
+// either phase; only how every OTHER approach is treated differs:
+//   - Clearing: the window right after an emergency vehicle's lead-time
+//     trigger first fires for a junction. Every OTHER approach is UNCHANGED
+//     from no preemption at all - nothing is forced closed yet, so no
+//     conflicting vehicle that wasn't already going to stop is forced to.
+//     The only effect there is cosmetic: an approach the ordinary logic
+//     currently shows green is reported to the client as yellow instead
+//     (see sim_engine.cpp's buildStateJson), an early warning that a hard
+//     cutover is coming. A real bug this fixed: forcing the preempted
+//     approach through the SAME ordinary logic as everyone else during
+//     Clearing (an earlier version of this) could show it red at the exact
+//     moment the emergency vehicle reached it - most visibly on a route
+//     crossing a multi-leg junction cluster (road_graph.hpp's junction-
+//     merging), where a second leg's fresh Clearing episode can begin with
+//     only a second or two of real lead time left.
+//   - Active: every other approach is forced red too, UNLESS the caller
+//     determines (via movementsCompatible, using the movement/toWayId/
+//     arrDirX/arrDirY carried below) that a specific other approach can't
+//     actually conflict with the priority movement - e.g. genuinely
+//     opposite-direction through traffic - in which case it's left
+//     untouched instead. Added after a real, observed problem: forcing
+//     EVERY other approach red for as long as an emergency vehicle takes to
+//     cross a large, busy multi-approach junction (routinely 15+ seconds at
+//     a big cluster) could back cross traffic up badly enough to spill back
+//     and physically block the emergency vehicle's own path too - the
+//     opposite of what preemption exists for. Sparing the genuinely
+//     non-conflicting approaches reduces how much traffic gets needlessly
+//     stopped without weakening the emergency vehicle's own priority at all.
+enum class PreemptPhase { None, Clearing, Active };
+
+struct PreemptStatus {
+    PreemptPhase phase = PreemptPhase::None;
+    // Only meaningful when phase != None - the priority movement, kept
+    // alongside its own approach/direction so a caller can run
+    // movementsCompatible against any OTHER approach (see this comment's own
+    // note on Active above).
+    std::string fromWayId, movement, toWayId;
+    double arrDirX = 0, arrDirY = 0;
 };
 
 // Density mode's per-vehicle-type priority weight: a bus carries many
@@ -311,7 +385,13 @@ static double vehiclePriorityWeight(const std::string& vehicleType) {
 // type ever appears in this class's interface.
 class RedlightController {
 public:
-    void beginTick() { densityWeight_.clear(); emergencyPreempt_.clear(); }
+    // emergencyPreempt_ is deliberately NOT cleared here (unlike
+    // densityWeight_) - it's a set of deadlines, not a per-tick report tally,
+    // and it prunes itself lazily via preempting()'s own simClock check. See
+    // reportEmergency's comment for why that's what lets a short post-
+    // crossing grace period survive across ticks with no separate
+    // crossing-time bookkeeping in the caller.
+    void beginTick() { densityWeight_.clear(); }
 
     // Density mode's per-approach "red dot" weight (see SignalMode's own
     // comment) - accumulated from the END of last tick's reports, one tick
@@ -328,26 +408,56 @@ public:
         return it != densityWeight_.end() ? it->second : 0.0;
     }
 
-    // Real preemption, not a rank bonus: every report for a junction this
-    // tick names the SAME fromWayId (only one approach can hold an ambulance
-    // at its front at a time), so last-writer-wins is fine here.
-    void reportEmergency(int junctionIdx, const EmergencyReport& r) {
-        emergencyPreempt_[junctionIdx] = r.fromWayId;
+    // Real preemption, not a rank bonus: only one approach can hold an
+    // emergency vehicle at a time for a given junction, so last-writer-wins
+    // is fine here. holdUntilSimClock is a DEADLINE, not a duration - the
+    // caller (sim_engine.cpp's main loop step 3) calls this every single
+    // physics tick it still needs the junction (still approaching within the
+    // lead-time window, or currently transiting it), each time pushing the
+    // deadline out to "now + grace period". Ticks are far more frequent than
+    // that grace period, so the deadline never actually gets a chance to
+    // elapse while still needed - it only starts counting down for real from
+    // the LAST tick anything refreshed it, which is exactly the tick an
+    // emergency vehicle finishes crossing the junction. That single rule is
+    // what produces both halves of the desired behaviour (green ahead of
+    // arrival, red resuming a fixed delay after crossing) with no separate
+    // "has this vehicle crossed yet" state anywhere.
+    // simClock is needed here (not just inside the deadlines themselves) to
+    // detect a FRESH episode: an existing entry whose holdUntil has already
+    // elapsed is a stale leftover from a past preemption at this junction,
+    // not a still-running one, so clearUntil gets re-anchored to THIS
+    // report's value exactly as if the map entry didn't exist yet - without
+    // this check, a junction preempted a second time later in the run would
+    // find its old (long-expired) entry and skip straight to Active with no
+    // new Clearing window at all.
+    void reportEmergency(int junctionIdx, const EmergencyReport& r, double simClock) {
+        auto it = emergencyPreempt_.find(junctionIdx);
+        bool freshEpisode = (it == emergencyPreempt_.end()) || simClock >= it->second.holdUntil;
+        EmergencyHold& h = emergencyPreempt_[junctionIdx];
+        h.fromWayId = r.fromWayId; h.movement = r.movement; h.toWayId = r.toWayId;
+        h.arrDirX = r.arrDirX; h.arrDirY = r.arrDirY;
+        if (freshEpisode) h.clearUntil = r.clearUntilSimClock;
+        h.holdUntil = r.holdUntilSimClock;
     }
 
-    // True + the forced-green fromWayId if `junctionIdx` is under active
-    // preemption this tick.
-    bool preempting(int junctionIdx, std::string& forWayIdOut) const {
+    // None/Clearing/Active (see PreemptPhase's own comment) + the relevant
+    // approach/movement for `junctionIdx` right now.
+    PreemptStatus preemptStatus(int junctionIdx, double simClock) const {
         auto it = emergencyPreempt_.find(junctionIdx);
-        if (it == emergencyPreempt_.end()) return false;
-        forWayIdOut = it->second;
-        return true;
+        if (it == emergencyPreempt_.end() || simClock >= it->second.holdUntil) return {};
+        PreemptPhase phase = simClock < it->second.clearUntil ? PreemptPhase::Clearing : PreemptPhase::Active;
+        return {phase, it->second.fromWayId, it->second.movement, it->second.toWayId, it->second.arrDirX, it->second.arrDirY};
     }
-    const std::unordered_map<int, std::string>& preemptions() const { return emergencyPreempt_; }
 
 private:
     static std::string key(int junctionIdx, const std::string& fromWayId) { return std::to_string(junctionIdx) + "|" + fromWayId; }
 
+    struct EmergencyHold {
+        std::string fromWayId, movement, toWayId;
+        double arrDirX = 0, arrDirY = 0;
+        double clearUntil = -1.0, holdUntil = -1.0;
+    };
+
     std::unordered_map<std::string, double> densityWeight_;
-    std::unordered_map<int, std::string> emergencyPreempt_;
+    std::unordered_map<int, EmergencyHold> emergencyPreempt_;
 };

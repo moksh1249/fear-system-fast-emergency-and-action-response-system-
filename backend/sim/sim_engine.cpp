@@ -470,31 +470,41 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
     // fixed-time math front-end/redlight.js runs locally from the clock
     // alone - so those colors have to be streamed explicitly here for the
     // client to render correctly (see sim-client.js's handling of this
-    // field). Only ever non-empty for this map's 3 signalized junctions.
-    //   - EmergencyOnly mode with no ambulance currently preempting a given
+    // field). Only ever non-empty for this map's 41 signalized junctions.
+    //   - EmergencyOnly mode with no preemption (Clearing or Active - see
+    //     redlights.hpp's PreemptPhase) currently pending for a given
     //     junction is deliberately SKIPPED here entirely (not just "colored
     //     the same as default") - that junction is left out of this array so
     //     the client falls back to its own ordinary fixed-time computation
     //     (same math, kept in lockstep via Sim.clockSec - see sim-client.js),
     //     which is what lets it show a genuine countdown timer rather than a
-    //     frozen "0". Only emitted once an ambulance is actually preempting.
+    //     frozen "0".
     //   - Density mode always emits every signalized junction (it has no
     //     fixed-time fallback to defer to).
-    //   - Either mode, once RedlightController::preempting names a junction
-    //     (see the main loop's step 3 - an ambulance's EmergencyReport at
-    //     the front of its approach queue), that approach's own color is
-    //     forced green and every other approach forced red, overriding the
-    //     mode's ordinary logic - real preemption, not just a priority
-    //     nudge.
+    //   - Either mode, the preempted approach itself is forced green for the
+    //     WHOLE preemption episode (see the main loop's step 3 - an
+    //     emergency-capable vehicle within its preemption lead time of
+    //     arriving, or currently crossing) - Clearing included, not just
+    //     Active, so the emergency vehicle is never made to wait on its own
+    //     preemption. Every OTHER approach is untouched (ordinary logic
+    //     still decides it, a currently-green one relabelled yellow as an
+    //     early warning) until the junction reaches Active, at which point
+    //     every other approach that would genuinely CONFLICT with the
+    //     priority movement is forced red (movementsCompatible, same rule
+    //     Density's own arbitration trusts) - real preemption, not just a
+    //     priority nudge, but not a blanket stop for approaches that
+    //     provably can't collide with it either (see redlights.hpp's
+    //     PreemptPhase comment for the real gridlock this avoids).
     if (signalMode != SignalMode::Default) {
         out += ",\"lamps\":[";
         bool firstLamp = true;
         for (size_t ji = 0; ji < rg.junctions.size(); ++ji) {
             const JunctionInfo& jn = rg.junctions[ji];
             if (!jn.signal.present) continue;
-            std::string preemptWayId;
-            bool preempting = redlights.preempting((int)ji, preemptWayId);
-            if (signalMode == SignalMode::EmergencyOnly && !preempting) continue;
+            PreemptStatus preempt = redlights.preemptStatus((int)ji, simClock);
+            bool preempted = preempt.phase != PreemptPhase::None;
+            bool clearing = preempt.phase == PreemptPhase::Clearing;
+            if (signalMode == SignalMode::EmergencyOnly && preempt.phase == PreemptPhase::None) continue;
             std::unordered_set<std::string> seen;
             std::vector<const JunctionEdge*> approaches;
             for (const JunctionEdge& je : rg.junctionEdges) {
@@ -502,10 +512,22 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
                 if (!seen.insert(je.fromWayId + "|" + je.movement).second) continue;
                 approaches.push_back(&je);
             }
-            const char* reason = preempting ? "emergency" : "density";
-            std::vector<const JunctionEdge*> greenList;
-            if (preempting) {
-                for (auto* je : approaches) if (je->fromWayId == preemptWayId) greenList.push_back(je);
+            const char* reason = preempted ? "emergency" : "density";
+            std::vector<std::string> colors(approaches.size());
+            // Step 1: each approach's ORDINARY color, ignoring preemption
+            // entirely - the fallback for whichever approaches preemption
+            // doesn't override below (every approach during Clearing except
+            // the winner, and - see step 2 - any Active approach that's
+            // provably compatible with the priority movement, not just the
+            // winner itself).
+            if (signalMode == SignalMode::EmergencyOnly) {
+                // Only reachable at all here as Clearing or Active (a fully
+                // idle EmergencyOnly junction already hit the `continue`
+                // above) - the SAME fixed-time math the client's own local
+                // fallback uses when a junction isn't streamed at all.
+                for (size_t i = 0; i < approaches.size(); ++i)
+                    colors[i] = computeLampColor(jn.signal, rg.nodeId[jn.primaryNodeIdx], rg.redlightGroups,
+                                                  approaches[i]->fromWayId, approaches[i]->movement, simClock);
             } else {
                 // Density mode: replicate the SAME greedy compatibility
                 // acceptance the real per-tick admission uses (see step 3's
@@ -522,6 +544,9 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
                 // Ranking by the same RedlightController weight shown in the
                 // sidebar keeps the displayed set consistent with what real
                 // vehicles would actually be granted if they all showed up.
+                // This arbitration has no idea a preemption might be pending
+                // (density weight alone decides it) - step 2 below overrides
+                // its pick as needed.
                 std::vector<const JunctionEdge*> order = approaches;
                 std::sort(order.begin(), order.end(), [&](const JunctionEdge* a, const JunctionEdge* b) {
                     auto wOf = [&](const JunctionEdge* e) { return redlights.densityWeightFor((int)ji, e->fromWayId); };
@@ -529,6 +554,7 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
                     if (wa != wb) return wa > wb;
                     return (a->fromWayId + a->movement) < (b->fromWayId + b->movement);
                 });
+                std::vector<const JunctionEdge*> greenList;
                 for (const JunctionEdge* c : order) {
                     bool ok = true;
                     for (auto& f : jn.inFlight) {
@@ -541,15 +567,41 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
                     }
                     if (ok) greenList.push_back(c);
                 }
+                for (size_t i = 0; i < approaches.size(); ++i)
+                    colors[i] = std::find(greenList.begin(), greenList.end(), approaches[i]) != greenList.end() ? "green" : "red";
             }
-            for (auto* je : approaches) {
-                bool green = std::find(greenList.begin(), greenList.end(), je) != greenList.end();
+            // Step 2: preemption overrides on top of the ordinary colors
+            // above - matching the main loop's step 3 gating exactly (see
+            // redlights.hpp's PreemptPhase comment).
+            if (preempted) {
+                for (size_t i = 0; i < approaches.size(); ++i) {
+                    const JunctionEdge* a = approaches[i];
+                    if (a->fromWayId == preempt.fromWayId) { colors[i] = "green"; continue; }
+                    if (clearing) {
+                        // Nothing forced yet - just the cosmetic early
+                        // warning on whatever's currently green.
+                        if (colors[i] == "green") colors[i] = "yellow";
+                        continue;
+                    }
+                    // Active: force red UNLESS this approach is provably
+                    // compatible with the priority movement (see
+                    // road_graph.hpp's movementsCompatible and this file's
+                    // main loop step 3 for why sparing it matters) - a
+                    // compatible one keeps whatever its ordinary logic
+                    // already decided in step 1.
+                    if (!movementsCompatible(preempt.fromWayId, preempt.movement, preempt.arrDirX, preempt.arrDirY, preempt.toWayId,
+                                              a->fromWayId, a->movement, a->arrDirX, a->arrDirY, a->toWayId)) {
+                        colors[i] = "red";
+                    }
+                }
+            }
+            for (size_t i = 0; i < approaches.size(); ++i) {
                 if (!firstLamp) out += ",";
                 firstLamp = false;
                 out += "{\"nodeId\":"; appendJsonString(out, rg.nodeId[jn.primaryNodeIdx]);
-                out += ",\"wayId\":"; appendJsonString(out, je->fromWayId);
-                out += ",\"movement\":"; appendJsonString(out, je->movement);
-                out += ",\"color\":\""; out += (green ? "green" : "red"); out += "\"";
+                out += ",\"wayId\":"; appendJsonString(out, approaches[i]->fromWayId);
+                out += ",\"movement\":"; appendJsonString(out, approaches[i]->movement);
+                out += ",\"color\":\""; out += colors[i]; out += "\"";
                 out += ",\"r\":\""; out += reason; out += "\"}";
             }
         }
@@ -685,7 +737,15 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
         // loop's step 3) - omitted rather than sent as 0 for every other
         // vehicle, matching this function's existing sparse-field convention.
         if (v.waitingLight) out += ",\"wt\":1";
-        if (v.emergency) out += ",\"em\":1";
+        // "ep" (emergencyPhase, only while v.emergency): 1 = still en route
+        // to the incident, 2 = incident reached, now en route to its home
+        // depot - lets the frontend's Emergency Control sidebar know when a
+        // dispatched vehicle has actually ARRIVED (see this file's own
+        // emergencyPhase comment on vehicles.hpp's Vehicle struct) and keep
+        // its incident card visible until then, rather than just going by
+        // "em" alone, which stays 1 for the WHOLE round trip including the
+        // way home.
+        if (v.emergency) { out += ",\"em\":1,\"ep\":"; out += std::to_string(v.emergencyPhase); }
         // Live "stuck >5s" flag - drives sim-client.js's magenta dot; the
         // SAME condition stuckNow above already counted, computed here per
         // vehicle rather than threaded through as a precomputed set.
@@ -754,7 +814,7 @@ static std::string buildVehicleInfoJson(int id, const TripSpec* t) {
         if (t->driverAge > 0) { out += ",\"driverAge\":"; appendNum(t->driverAge, 0); }
         if (t->responseTimeSec > 0) { out += ",\"responseTimeSec\":"; appendNum(t->responseTimeSec, 2); }
         if (!t->homeAmenityId.empty()) { out += ",\"homeAmenityId\":"; appendJsonString(out, t->homeAmenityId); }
-        if (!t->homeHospitalName.empty()) { out += ",\"homeHospitalName\":"; appendJsonString(out, t->homeHospitalName); }
+        if (!t->homeDepotName.empty()) { out += ",\"homeDepotName\":"; appendJsonString(out, t->homeDepotName); }
     }
     out += "}";
     return out;
@@ -832,19 +892,45 @@ static bool visionGapIsSafe(const RoadGraph& rg, const std::vector<Vehicle>& veh
     return true;
 }
 
+// Splices a freshly CH-resolved route from `v`'s current position onto
+// `incidentNodeId`, then flags it emergency/phase 1 (see stepToNode/
+// resolveRoute) - the dispatch mechanics shared by both triggerEmergency
+// (manual, one already-selected vehicle) and dispatchIncident (auto, nearest
+// N per requested type) below. Flagging emergency is what EmergencyOnly/
+// Density mode's junction preemption keys off of (via an EmergencyReport -
+// see the main loop's step 3), and dispatchTime is what lets the eventual
+// incident/depot arrivals report response/transport times (see the
+// edge-transition step and buildStateJson's "stats" field). Returns false
+// (leaving `v` untouched) if no route could be resolved.
+static bool dispatchVehicleToIncident(Vehicle& v, const RoadGraph& rg, const ChGraph& chg,
+                                       const std::string& incidentNodeId, double simClock, std::string& err) {
+    std::string fromNodeId = rg.nodeId[stepToNode(rg, v.route[v.routeIdx])];
+    std::vector<RouteStep> newRoute = resolveRoute(rg, chg, fromNodeId, incidentNodeId, err);
+    if (newRoute.empty()) return false;
+    v.route.resize(v.routeIdx + 1);
+    v.route.insert(v.route.end(), newRoute.begin(), newRoute.end());
+    v.emergency = true;
+    v.emergencyPhase = 1;
+    v.dispatchTime = simClock;
+    v.incidentArrivalTime = -1.0;
+    return true;
+}
+
 // Control messages from the frontend - setSpeed/stop/getRoute/getVehicleInfo/
-// setAdvancedLaneAI/setSignalMode/triggerEmergency all do something now.
-// triggerEmergency dispatches an already-active ambulance to a clicked map
-// point: it splices a freshly-resolved route from the vehicle's current
-// position on to the incident node (see stepToNode/resolveRoute), flags it
-// emergency (which EmergencyOnly/Density mode's junction preemption keys off
-// via an EmergencyReport - see the main loop's step 3), and records
-// dispatchTime so the eventual incident/hospital arrivals can report
-// response/transport times (see the edge-transition step and
-// buildStateJson's "stats" field).
+// setAdvancedLaneAI/setSignalMode/triggerEmergency/dispatchIncident all do
+// something now. triggerEmergency dispatches one already-selected, already-
+// active emergency-capable vehicle (ambulance/firetruck/police) to a clicked
+// map point. dispatchIncident (Phase 5's incident-preset system) is the auto
+// version: given a per-type requested count, it ranks every active,
+// not-already-`emergency` vehicle of each requested type by straight-line
+// distance to the incident and dispatches the closest N of each - a plain
+// O(n) scan + sort, fine since this fires roughly every couple of
+// sim-minutes (a periodic frontend prompt), never per tick. Both funnel into
+// dispatchVehicleToIncident above for the actual route-splice + flag work.
 static void handleCommand(const std::string& text, WsClient& fromClient, double& speedMultiplier, bool& stopRequested,
                            bool& advancedLaneAI, SignalMode& signalMode, std::vector<Vehicle>& vehicles,
                            const RoadGraph& rg, const ChGraph& chg, const std::vector<TripSpec>& trips,
+                           const std::unordered_map<std::string, std::string>& depotNodeByAmenityId,
                            double simClock) {
     try {
         JsonValue msg = JsonParser(text).parse();
@@ -879,19 +965,133 @@ static void handleCommand(const std::string& text, WsClient& fromClient, double&
             Vehicle* found = nullptr;
             for (auto& v : vehicles) if (v.id == id && v.active) { found = &v; break; }
             if (!found) { std::cerr << "[sim] triggerEmergency ignored: vehicle " << id << " not active\n"; return; }
-            if (found->vehicleType != "ambulance") { std::cerr << "[sim] triggerEmergency ignored: vehicle " << id << " is not an ambulance\n"; return; }
-            std::string fromNodeId = rg.nodeId[stepToNode(rg, found->route[found->routeIdx])];
+            if (!isEmergencyCapable(found->vehicleType)) {
+                std::cerr << "[sim] triggerEmergency ignored: vehicle " << id << " (" << found->vehicleType << ") is not emergency-capable\n";
+                return;
+            }
             std::string incidentNodeId = nearestRoutableNodeId(rg, x, y);
             std::string err;
-            std::vector<RouteStep> newRoute = resolveRoute(rg, chg, fromNodeId, incidentNodeId, err);
-            if (newRoute.empty()) { std::cerr << "[sim] WARN emergency dispatch route failed for vehicle " << id << ": " << err << "\n"; return; }
-            found->route.resize(found->routeIdx + 1);
-            found->route.insert(found->route.end(), newRoute.begin(), newRoute.end());
-            found->emergency = true;
-            found->emergencyPhase = 1;
-            found->dispatchTime = simClock;
-            found->incidentArrivalTime = -1.0;
+            if (!dispatchVehicleToIncident(*found, rg, chg, incidentNodeId, simClock, err)) {
+                std::cerr << "[sim] WARN emergency dispatch route failed for vehicle " << id << ": " << err << "\n";
+                return;
+            }
             std::cerr << "[sim] emergency dispatch: vehicle " << id << " -> incident near node " << incidentNodeId << "\n";
+        } else if (*cmd == "dispatchIncident") {
+            double x = msg.num("x").value_or(0.0), y = msg.num("y").value_or(0.0);
+            std::string incidentNodeId = nearestRoutableNodeId(rg, x, y);
+            const JsonValue* countsVal = msg.find("counts");
+            if (!countsVal || countsVal->type != JsonValue::Type::Object) {
+                std::cerr << "[sim] dispatchIncident ignored: missing 'counts'\n";
+                return;
+            }
+            // incidentId is a purely client-side correlation token (the
+            // sidebar incident card's own local id) - opaque to the engine,
+            // just echoed straight back in the ack so the frontend can match
+            // this response to the right card even if several dispatch
+            // requests are in flight at once (see sim-client.js's
+            // liveSimHandleDispatchAck).
+            auto incidentIdVal = msg.num("incidentId");
+            std::string ack = "{\"type\":\"dispatchAck\"";
+            if (incidentIdVal) { ack += ",\"incidentId\":"; ack += std::to_string((long long)*incidentIdVal); }
+            ack += ",\"dispatched\":{";
+            bool firstType = true;
+            for (auto& kv : countsVal->objVal) {
+                const std::string& type = kv.first;
+                const JsonValue& countVal = kv.second;
+                if (countVal.type != JsonValue::Type::Number) continue;
+                int requested = (int)countVal.numVal;
+                if (requested <= 0) continue;
+                if (!isEmergencyCapable(type)) {
+                    std::cerr << "[sim] dispatchIncident ignored non-emergency-capable type: " << type << "\n";
+                    continue;
+                }
+                // Nearest-first: every active, not-already-responding
+                // vehicle of this type, ranked by straight-line distance to
+                // the incident (a real route-cost ranking would be truer but
+                // isn't worth a CH query per candidate here - this already
+                // only fires a few times a sim-minute).
+                std::vector<std::pair<double, size_t>> candidates;
+                for (size_t i = 0; i < vehicles.size(); ++i) {
+                    Vehicle& v = vehicles[i];
+                    if (!v.active || v.emergency || v.vehicleType != type) continue;
+                    VehiclePosition pos = vehicleWorldPosition(rg, v);
+                    double dx = pos.x - x, dy = pos.y - y;
+                    candidates.emplace_back(dx * dx + dy * dy, i);
+                }
+                std::sort(candidates.begin(), candidates.end(),
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
+
+                // Tracks each dispatched vehicle's own index into vehicles[]/
+                // trips[] (the two arrays are spawned parallel - see the main
+                // loop's trySpawnIndex) alongside its id, purely so the ack
+                // below can look up trips[idx].homeDepotName/homeAmenityId -
+                // the hospital (or station) it'll head to once it reaches
+                // this incident (see the phase 1->2 hand-off) - without a
+                // second linear scan by id.
+                std::vector<std::pair<int, size_t>> dispatchedList;
+                for (auto& cand : candidates) {
+                    if ((int)dispatchedList.size() >= requested) break;
+                    std::string err;
+                    if (dispatchVehicleToIncident(vehicles[cand.second], rg, chg, incidentNodeId, simClock, err)) {
+                        dispatchedList.push_back({vehicles[cand.second].id, cand.second});
+                    }
+                }
+                std::cerr << "[sim] dispatchIncident: " << type << " requested=" << requested
+                          << " dispatched=" << dispatchedList.size() << " -> incident near node " << incidentNodeId << "\n";
+
+                if (!firstType) ack += ",";
+                firstType = false;
+                appendJsonString(ack, type);
+                ack += ":{\"requested\":"; ack += std::to_string(requested);
+                ack += ",\"ids\":[";
+                for (size_t i = 0; i < dispatchedList.size(); ++i) {
+                    if (i) ack += ",";
+                    ack += "{\"id\":"; ack += std::to_string(dispatchedList[i].first);
+                    const TripSpec& dt = trips[dispatchedList[i].second];
+                    // "the hospital the ambulance is taking the patient to" -
+                    // known from the moment of dispatch (its assigned home
+                    // depot never changes), so the client can show/mark it
+                    // well before the vehicle actually reaches phase 2 (see
+                    // sim-client.js's LiveSim.depotDestinations).
+                    if (!dt.homeAmenityId.empty()) { ack += ",\"homeAmenityId\":"; appendJsonString(ack, dt.homeAmenityId); }
+                    if (!dt.homeDepotName.empty()) { ack += ",\"homeDepotName\":"; appendJsonString(ack, dt.homeDepotName); }
+                    ack += "}";
+                }
+                ack += "]}";
+            }
+            ack += "}}";
+            wsSendText(fromClient, ack);
+        } else if (*cmd == "cancelEmergency") {
+            // Recalls a dispatched vehicle - frees it from the incident it
+            // was sent to (see the frontend's "Recall" button on a
+            // responding incident card) by clearing emergency/emergencyPhase
+            // (stops EmergencyOnly/Density preemption and the responding
+            // red/blue beacon immediately) and, if a home depot is known,
+            // sending it there the same way it would have gone automatically
+            // on reaching the incident (see the main loop's phase 1->2
+            // hand-off) - so recalling mid-route to the incident doesn't
+            // strand it there, it just heads home a leg early. No known
+            // depot/route: falls through and just clears the flags in
+            // place, letting it finish out whatever route it already had.
+            int id = (int)msg.num("id").value_or(-1);
+            Vehicle* found = nullptr;
+            for (auto& v : vehicles) if (v.id == id && v.active) { found = &v; break; }
+            if (!found) { std::cerr << "[sim] cancelEmergency ignored: vehicle " << id << " not active\n"; return; }
+            if (!found->emergency) { std::cerr << "[sim] cancelEmergency ignored: vehicle " << id << " is not currently responding\n"; return; }
+            auto hit = depotNodeByAmenityId.find(found->homeAmenityId);
+            if (hit != depotNodeByAmenityId.end()) {
+                std::string fromNodeId = rg.nodeId[stepToNode(rg, found->route[found->routeIdx])];
+                std::string err;
+                std::vector<RouteStep> toDepot = resolveRoute(rg, chg, fromNodeId, hit->second, err);
+                if (!toDepot.empty()) {
+                    found->route = std::move(toDepot);
+                    found->routeIdx = 0; found->distAlongEdge = 0;
+                    found->lane = desiredLaneForStep(rg, found->route, 0);
+                }
+            }
+            found->emergency = false;
+            found->emergencyPhase = 0;
+            std::cerr << "[sim] emergency cancelled: vehicle " << id << " recalled\n";
         } else {
             std::cerr << "[sim] control message noted (no effect until a later phase): " << text << "\n";
         }
@@ -954,19 +1154,22 @@ int main(int argc, char** argv) {
         std::vector<TripSpec> trips = loadTrips(vehiclesRoot);
         std::cerr << "[sim] loaded " << trips.size() << " trip specs (setup " << elapsedMs(t0) << " ms)\n";
 
-        // Ambulance depot -> routable node lookup (generate_vehicles.py's own
-        // hospital-snapping, already done once at generation time - see
-        // find_hospital_depots there - persisted into vehicles.json's
+        // Emergency depot -> routable node lookup (generate_vehicles.py's own
+        // depot-snapping, already done once at generation time - see
+        // find_emergency_depot_groups there - persisted into vehicles.json's
         // meta.depots) so an emergency dispatch's phase 1->2 handoff (see the
-        // main loop's edge-transition step) can route an ambulance on to its
-        // OWN home hospital by amenity id, not just anywhere.
-        std::unordered_map<std::string, std::string> hospitalNodeByAmenityId;
+        // main loop's edge-transition step) can route a responding vehicle on
+        // to its OWN home depot by amenity id, not just anywhere. One flat
+        // map for all 3 emergency-capable types (hospital/fire/police), since
+        // each vehicle's own homeAmenityId already points at the right one -
+        // the lookup itself doesn't need to know or care which type it is.
+        std::unordered_map<std::string, std::string> depotNodeByAmenityId;
         if (const JsonValue* metaVal = vehiclesRoot.find("meta")) {
             if (const JsonValue* depotsArr = metaVal->find("depots")) {
                 if (depotsArr->type == JsonValue::Type::Array) {
                     for (auto& d : depotsArr->arrVal) {
                         auto did = d.str("id"), dNode = d.str("nodeId");
-                        if (did && dNode) hospitalNodeByAmenityId[*did] = *dNode;
+                        if (did && dNode) depotNodeByAmenityId[*did] = *dNode;
                     }
                 }
             }
@@ -1018,7 +1221,7 @@ int main(int argc, char** argv) {
         bool allDone = false;
         while (simClock < simSeconds && !stopRequested && !allDone) {
             auto tickWallStart = Clock::now();
-            if (!headless) server.pump([&](const std::string& text, WsClient& fc) { handleCommand(text, fc, speedMultiplier, stopRequested, advancedLaneAI, signalMode, vehicles, rg, chg, trips, simClock); });
+            if (!headless) server.pump([&](const std::string& text, WsClient& fc) { handleCommand(text, fc, speedMultiplier, stopRequested, advancedLaneAI, signalMode, vehicles, rg, chg, trips, depotNodeByAmenityId, simClock); });
 
             // How many dt=1/20s physics ticks to run before the next
             // broadcast/sleep (step 7) - see that step's own comment for why
@@ -1269,30 +1472,106 @@ int main(int argc, char** argv) {
             redlights.beginTick();
 
             // Emergency preemption (EmergencyOnly AND Density mode - Default
-            // mode has no ambulance-awareness at all, see redlights.hpp's
-            // SignalMode comment): a fresh per-tick scan for any vehicle
-            // with emergency==true at the front of an approach queue leading
-            // into a SIGNALIZED junction, reported to `redlights` as an
-            // EmergencyReport (its approach + current position - see
-            // vehicles.hpp's vehicleWorldPosition) BEFORE the gating loop
-            // below decides any colors, so it can short-circuit both modes'
-            // ordinary logic for a preempted junction. Recomputed fresh
-            // every tick (never latched, since beginTick() just cleared the
-            // controller's memory of it) so preemption ends automatically
-            // the instant the emergency vehicle clears the junction (its
-            // routeIdx advances past it) or its flag goes back off.
+            // mode has no emergency-vehicle-awareness at all, see
+            // redlights.hpp's SignalMode comment): rather than reacting only
+            // once an emergency-capable vehicle (isEmergencyCapable -
+            // ambulance/firetruck/police) with emergency==true is already
+            // the front of its approach queue immediately next to a
+            // signalized junction, this looks AHEAD along each such
+            // vehicle's remaining route every tick for the next SIGNALIZED
+            // junction and estimates its time-to-arrival there (remaining
+            // distance / current speed, floored so a momentarily slow or
+            // stopped vehicle doesn't read as "never arriving"). Preemption
+            // engages once that estimate is within PREEMPT_LEAD_SEC - "green
+            // 10 seconds before it reaches the intersection" - giving cross
+            // traffic time to actually clear before the emergency vehicle
+            // gets there, not just once it's already sitting at the line.
+            // Preemption itself opens with a PREEMPT_YELLOW_SEC "Clearing"
+            // window (see redlights.hpp's PreemptPhase) before the hard
+            // green/red cutover ("Active") - conflicting traffic gets a
+            // yellow warning instead of an instant stop, so anything already
+            // moving through the junction can still get where it's going.
+            // redlights.hpp's RedlightController holds a preempted junction
+            // open until a per-report deadline rather than clearing it every
+            // tick the way Density's weights do; every tick this loop still
+            // needs a given junction (still approaching within the lead
+            // window, OR currently transiting its junction edge) it pushes
+            // that deadline back out to simClock + PREEMPT_GRACE_SEC. Ticks
+            // are far more frequent than that grace period, so the deadline
+            // never actually elapses while still needed - it only starts
+            // counting down for real from the LAST tick anything refreshed
+            // it, which is the tick the vehicle finishes crossing the
+            // junction edge. That's what makes the junction "resume like
+            // before, PREEMPT_GRACE_SEC seconds after the vehicle crosses"
+            // with no separate crossing-time bookkeeping anywhere.
             if (signalMode != SignalMode::Default) {
-                for (auto& [k, idxs] : groups) {
-                    if (idxs.empty()) continue;
-                    Vehicle& fv = vehicles[idxs.back()];
-                    if (!fv.emergency || fv.vehicleType != "ambulance") continue;
-                    if (fv.route[fv.routeIdx].isJunction || fv.routeIdx + 1 >= fv.route.size()) continue;
-                    const RouteStep& nxt = fv.route[fv.routeIdx + 1];
-                    if (!nxt.isJunction) continue;
-                    const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
-                    if (!rg.junctions[je.junctionIdx].signal.present) continue;
-                    VehiclePosition pos = vehicleWorldPosition(rg, fv);
-                    redlights.reportEmergency(je.junctionIdx, {je.fromWayId, pos.x, pos.y});
+                const double PREEMPT_LEAD_SEC = 10.0;
+                const double PREEMPT_YELLOW_SEC = 5.0;
+                const double PREEMPT_GRACE_SEC = 5.0;
+                // Comfortably more than PREEMPT_LEAD_SEC's worth of distance
+                // at this project's fastest emergency-vehicle speeds (police,
+                // up to 140 km/h =~ 39 m/s -> ~390m in 10s) - just bounds how
+                // far this scan walks a route looking for the next
+                // signalized junction, not the trigger distance itself
+                // (that's still purely the ETA check below).
+                const double PREEMPT_LOOKAHEAD_M = 600.0;
+                for (auto& fv : vehicles) {
+                    if (!fv.active || !fv.emergency || !isEmergencyCapable(fv.vehicleType)) continue;
+                    if (fv.route.empty() || fv.routeIdx >= fv.route.size()) continue;
+                    // Genuinely stuck (this project's own >5s-stopped
+                    // definition - see Vehicle::stoppedDurationSec) - not by
+                    // its own light (that's already forced open the instant
+                    // preemption engages, Clearing included), but by real
+                    // traffic physically ahead of it that a green light can't
+                    // clear on its own (a slow-discharging queue, or
+                    // downstream congestion). Continuing to hold every OTHER
+                    // approach at this junction fully red does this vehicle
+                    // no good at all while that's true, and actively makes
+                    // things worse - a real, observed effect: a long enough
+                    // lockout backs up cross traffic badly enough to spill
+                    // back and physically block the emergency vehicle's own
+                    // path too, the opposite of what preemption is for. So
+                    // simply stop refreshing the hold while stuck, letting it
+                    // lapse via the existing grace-period expiry - the
+                    // instant this vehicle starts moving again
+                    // (stoppedDurationSec resets to 0), the very next tick's
+                    // ETA check re-engages preemption fresh.
+                    if (fv.stoppedDurationSec > 5.0) continue;
+                    const RouteStep& cur = fv.route[fv.routeIdx];
+                    if (cur.isJunction) {
+                        // Already transiting a junction edge this tick -
+                        // bridge the gap between the lead-time trigger below
+                        // and the post-crossing grace period so the light
+                        // never drops back to red mid-crossing.
+                        const JunctionEdge& je = rg.junctionEdges[cur.edgeIndex];
+                        if (rg.junctions[je.junctionIdx].signal.present) {
+                            VehiclePosition pos = vehicleWorldPosition(rg, fv);
+                            redlights.reportEmergency(je.junctionIdx, {je.fromWayId, je.movement, je.toWayId, je.arrDirX, je.arrDirY,
+                                                                        pos.x, pos.y, simClock + PREEMPT_YELLOW_SEC, simClock + PREEMPT_GRACE_SEC}, simClock);
+                        }
+                        continue;
+                    }
+                    double dist = cur.length - fv.distAlongEdge;
+                    size_t k = fv.routeIdx + 1;
+                    while (k < fv.route.size() && dist < PREEMPT_LOOKAHEAD_M) {
+                        const RouteStep& s = fv.route[k];
+                        if (s.isJunction) {
+                            const JunctionEdge& je = rg.junctionEdges[s.edgeIndex];
+                            if (rg.junctions[je.junctionIdx].signal.present) {
+                                double refSpeed = std::max(fv.speed, 3.0); // floor: a vehicle briefly stopped/crawling on approach still preempts, instead of reading as an infinite ETA
+                                double etaSec = dist / refSpeed;
+                                if (etaSec <= PREEMPT_LEAD_SEC) {
+                                    VehiclePosition pos = vehicleWorldPosition(rg, fv);
+                                    redlights.reportEmergency(je.junctionIdx, {je.fromWayId, je.movement, je.toWayId, je.arrDirX, je.arrDirY,
+                                                                                pos.x, pos.y, simClock + PREEMPT_YELLOW_SEC, simClock + PREEMPT_GRACE_SEC}, simClock);
+                                }
+                                break; // only the NEXT signalized junction ahead matters
+                            }
+                            // unsignalized junction (~99.9% of them) - not a "red light", keep scanning past it for the next one
+                        }
+                        dist += s.length;
+                        ++k;
+                    }
                 }
             }
 
@@ -1336,19 +1615,58 @@ int main(int argc, char** argv) {
                 const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
                 const JunctionInfo& jn = rg.junctions[je.junctionIdx];
 
-                std::string preemptWayId;
-                bool preempting = jn.signal.present && redlights.preempting(je.junctionIdx, preemptWayId);
-                if (preempting) {
-                    // Real preemption: this approach wins outright, every
-                    // other approach at this junction forced red - not a
-                    // rank bonus fed into the ordinary arbitration below.
-                    fv.gate = (je.fromWayId == preemptWayId) ? 1 : 2;
+                PreemptStatus preempt = jn.signal.present ? redlights.preemptStatus(je.junctionIdx, simClock) : PreemptStatus{};
+                if (preempt.phase != PreemptPhase::None && je.fromWayId == preempt.fromWayId) {
+                    // The priority approach is forced green for the WHOLE
+                    // preemption episode - Clearing included, not just
+                    // Active - so the emergency vehicle itself is never made
+                    // to wait on its own preemption. Clearing only gives
+                    // CONFLICTING traffic a warning before being cut off
+                    // (see redlights.hpp's PreemptPhase comment); it must
+                    // never delay the vehicle that preemption exists for in
+                    // the first place. A real, observed bug before this fix:
+                    // a route crossing a multi-leg junction cluster (see
+                    // road_graph.hpp's junction-merging) can trigger a FRESH
+                    // Clearing episode for its second leg with only a second
+                    // or two of real lead time left (the first leg's Active
+                    // phase had just ended) - falling through to ordinary
+                    // fixed-time logic for that approach during Clearing (as
+                    // this branch used to) could show it red at exactly that
+                    // moment, stopping the ambulance mid-cluster.
+                    fv.gate = 1;
+                } else if (preempt.phase == PreemptPhase::Active &&
+                           !movementsCompatible(preempt.fromWayId, preempt.movement, preempt.arrDirX, preempt.arrDirY, preempt.toWayId,
+                                                 je.fromWayId, je.movement, je.arrDirX, je.arrDirY, je.toWayId)) {
+                    // Active's other half: every approach that would
+                    // genuinely CONFLICT with the priority movement forced
+                    // red - not a rank bonus fed into the ordinary
+                    // arbitration below. A real, observed problem this
+                    // guards against: blanket-forcing EVERY other approach
+                    // red (this branch's original form) for as long as an
+                    // emergency vehicle takes to cross a large, busy multi-
+                    // approach junction (routinely 15+ seconds at a big
+                    // cluster) could back cross traffic up badly enough to
+                    // spill back and physically block the emergency
+                    // vehicle's own path too - defeating the entire point of
+                    // preemption. movementsCompatible (road_graph.hpp) is
+                    // the SAME hand-verified rule Density mode's own
+                    // arbitration already trusts for real safety - a genuine
+                    // conflict (crossing paths) still serializes exactly as
+                    // before; only a movement that provably can't collide
+                    // with the priority one (e.g. true opposite-direction
+                    // through traffic) is spared and falls through to its
+                    // own ordinary logic below instead.
+                    fv.gate = 2;
                 } else if (jn.signal.present && (signalMode == SignalMode::Default || signalMode == SignalMode::EmergencyOnly)) {
-                    // EmergencyOnly with no active preemption at this
-                    // junction (handled above) runs the EXACT SAME fixed-
-                    // time math/timer as Default mode - see redlights.hpp's
-                    // SignalMode comment for why that's the whole point of
-                    // the mode.
+                    // No forced state applies to THIS approach right now (no
+                    // preemption pending at all, Clearing but this isn't the
+                    // preempted approach, or Active but this approach is
+                    // provably compatible with the priority one) - ordinary
+                    // fixed-time math, unaffected either way. A currently-
+                    // green approach here is what Clearing relabels yellow
+                    // on the client (see buildStateJson) as its warning that
+                    // a forced red may be coming, but nothing here treats it
+                    // any differently from an ordinary unpreempted tick.
                     std::string color = computeLampColor(jn.signal, rg.nodeId[jn.primaryNodeIdx], rg.redlightGroups, je.fromWayId, je.movement, simClock);
                     fv.gate = (color == "green") ? 1 : 2;
                 } else {
@@ -1619,30 +1937,31 @@ int main(int argc, char** argv) {
                     const RouteStep& cur = v.route[v.routeIdx];
                     if (v.routeIdx + 1 >= v.route.size()) {
                         // Emergency dispatch (see handleCommand's
-                        // triggerEmergency): reaching the end of the
-                        // incident-bound leg (phase 1) hands off to a fresh
-                        // leg toward the ambulance's own home hospital
-                        // instead of ending the trip - reaching the end of
-                        // THAT leg (phase 2), or a plain non-emergency trip,
-                        // ends it exactly as before.
+                        // triggerEmergency/dispatchIncident): reaching the
+                        // end of the incident-bound leg (phase 1) hands off
+                        // to a fresh leg toward the vehicle's own home depot
+                        // (hospital for an ambulance, station for a
+                        // firetruck/police car) instead of ending the trip -
+                        // reaching the end of THAT leg (phase 2), or a plain
+                        // non-emergency trip, ends it exactly as before.
                         if (v.emergency && v.emergencyPhase == 1) {
                             v.incidentArrivalTime = simClock;
-                            auto hit = hospitalNodeByAmenityId.find(v.homeAmenityId);
-                            std::vector<RouteStep> toHospital;
-                            if (hit != hospitalNodeByAmenityId.end()) {
+                            auto hit = depotNodeByAmenityId.find(v.homeAmenityId);
+                            std::vector<RouteStep> toDepot;
+                            if (hit != depotNodeByAmenityId.end()) {
                                 std::string err;
-                                toHospital = resolveRoute(rg, chg, rg.nodeId[stepToNode(rg, cur)], hit->second, err);
+                                toDepot = resolveRoute(rg, chg, rg.nodeId[stepToNode(rg, cur)], hit->second, err);
                             }
-                            if (!toHospital.empty()) {
-                                v.route = std::move(toHospital);
+                            if (!toDepot.empty()) {
+                                v.route = std::move(toDepot);
                                 v.routeIdx = 0; v.distAlongEdge = 0;
                                 v.lane = desiredLaneForStep(rg, v.route, 0);
                                 v.emergencyPhase = 2;
                                 break;
                             }
-                            // No known home hospital, or routing to it
-                            // failed - fall through and end the trip like an
-                            // ordinary completion, below.
+                            // No known home depot, or routing to it failed -
+                            // fall through and end the trip like an ordinary
+                            // completion, below.
                         }
                         if (v.emergency && v.emergencyPhase == 2) {
                             emergencyStats.count++;
