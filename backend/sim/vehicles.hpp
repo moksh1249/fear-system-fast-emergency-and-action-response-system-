@@ -3,13 +3,13 @@
 // Vehicles, routing, and car-following (IDM) physics for the "traffic light
 // revamped" simulation engine (backend/sim/sim_engine.cpp). Depends on
 // road_graph.hpp for the map model but deliberately knows nothing about
-// redlights.hpp/RedlightController - a Vehicle only ever tracks its OWN
-// "am I currently waiting at a red light" state (waitingLight/
-// waitStartTime, set by sim_engine.cpp's main loop from the gate outcome);
-// it never calls into the signal-control layer itself. sim_engine.cpp's main
-// loop is the only code that reads a Vehicle's state to build the
-// VehicleStopReport/EmergencyReport that layer actually consumes - see
-// redlights.hpp's own header comment for why that boundary exists.
+// redlights.hpp/RedlightController/AutoWeightBoard - a Vehicle only ever
+// tracks its OWN "am I currently showing the Auto/Density-mode green dot"
+// state (autoDotOn/autoDotSince, set by sim_engine.cpp's main loop from the
+// gate outcome); it never calls into the signal-control layer itself.
+// sim_engine.cpp's main loop is the only code that reads a Vehicle's state
+// to feed AutoWeightBoard/build an EmergencyReport - see redlights.hpp's own
+// header comment for why that boundary exists.
 
 #include <algorithm>
 #include <cmath>
@@ -365,14 +365,16 @@ struct Vehicle {
     double dispatchTime = -1.0, incidentArrivalTime = -1.0;
     std::string homeAmenityId; // copied from TripSpec at spawn - depot lookup for the phase 1->2 handoff
 
-    // Density mode's "waiting for the light" state (see sim_engine.cpp's
-    // main loop step 3) - a vehicle showing a red dot in the frontend, and
-    // the trigger for sim_engine.cpp to submit a VehicleStopReport to
-    // redlights.hpp's RedlightController on its behalf (see redlights.hpp's
-    // own header comment for why the report - not this struct - is what
-    // that layer actually sees). Not meaningful outside Density mode.
-    bool waitingLight = false;
-    double waitStartTime = -1.0;
+    // Auto/Density mode's green-dot queue-chain state (rewritten from
+    // scratch 2026-09-02 - see redlights.hpp's AutoWeightBoard and
+    // sim_engine.cpp's main loop for where this gets set): the first vehicle
+    // stopped at a red light, and every vehicle that stops behind it, each
+    // get their OWN autoDotOn/autoDotSince - autoDotSince is when THIS
+    // vehicle personally started queuing, not the front vehicle's time, so
+    // each dot's age (and the weight it contributes to its approach) is its
+    // own. Not meaningful outside Auto/Density mode.
+    bool autoDotOn = false;
+    double autoDotSince = -1.0;
 
     // Live-traffic rerouting ("the CH path is a suggestion, not gospel" -
     // see sim_engine.cpp's reroute step and liveWeightedRoute below).
@@ -472,8 +474,8 @@ static bool laneChangeSafe(const std::vector<int>& sortedIdxs, const std::vector
 // Vehicle's current world position, plain-lerped along its current edge (no
 // junction-turn curve bending - see road_graph.hpp's junctionEdgeCurvePoint
 // for that refinement, used where a real curved path matters). Used by
-// sim_engine.cpp's main loop to fill in VehicleStopReport/EmergencyReport's
-// gpsX/gpsY, and by visionCone below - this map's own coordinate space is
+// sim_engine.cpp's main loop to fill in EmergencyReport's gpsX/gpsY, and by
+// visionCone below - this map's own coordinate space is
 // itself a metric projection of real lon/lat (see osm_to_json.py's
 // project()), so this IS the vehicle's GPS position, just not degrees.
 struct VehiclePosition { double x, y; };

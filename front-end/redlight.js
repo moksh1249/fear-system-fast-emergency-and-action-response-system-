@@ -569,7 +569,25 @@ function getRedlightCountdown(node, nodeId, clockSec, wayId, movement) {
   const simLamps = State.simLampOverrides && State.simLampOverrides.get(nodeId);
   if (simLamps) {
     const entry = simLamps.get(`${wayId}|${movement}`);
-    return { color: (entry && entry.color) || "red", remainingSec: 0, overridden: true, simReason: entry && entry.reason };
+    // A present node with no entry for THIS specific (wayId, movement) means
+    // there's no real JunctionEdge for that movement at all - e.g. an
+    // approach with no legal/geometric right turn (see road_graph.hpp's
+    // classifyMovement: not every wayId produces both a "through" and a
+    // "right" edge), so the "right" lamp head drawn here is a phantom that
+    // no real vehicle ever uses. Both EmergencyOnly (while preempting) and
+    // Density mode stream every REAL movement unconditionally each tick, so
+    // a genuinely-signalized movement's entry is never the one missing here
+    // - only ever a phantom head. Confirmed live (Playwright probe against
+    // the running engine, Density mode): this was previously defaulting to
+    // hard "red" forever for such heads, which - since drawRedlights' stop
+    // line is drawn whenever EITHER head isn't green - made an approach's
+    // stop line/lamp look permanently stuck red even while its real
+    // ("through" or "right") traffic was actively flowing on live green.
+    // Falling through to plain, unforced green here is safe either way
+    // (nothing in the physics ever gates on a movement with no edge) and
+    // matches how a whole-junction miss already falls through above.
+    if (!entry) return { color: "green", remainingSec: 0 };
+    return { color: entry.color, remainingSec: 0, overridden: true, simReason: entry.reason };
   }
   if (signal.groupId) {
     const info = getGroupTurnInfo(signal.groupId, clockSec);

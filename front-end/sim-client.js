@@ -42,7 +42,7 @@ const LiveSim = {
   vehicles: new Map(), // id -> {x, y, h, s, ty, ln}
   lastMeta: { t: 0, spawned: 0, completed: 0, total: 0, mode: "default" },
   lastStats: null,        // most recent {completedTotal, avgTripSec, byType, emergency} - see buildStateJson
-  approachWeights: new Map(), // nodeId -> Map(wayId -> weight) - Density mode only, see buildStateJson's "approachWeights" field
+  approachWeights: new Map(), // nodeId -> Map(wayId -> weight) - Auto/Density mode only, see buildStateJson's "approachWeights" field
   reconnectAttempts: 0,
   selectedId: null,      // vehicle id whose path is shown, or null
   selectedRoute: null,   // [[x,y], ...] once the server has answered getRoute, else null
@@ -66,6 +66,22 @@ const LiveSim = {
   // emergencyPhase 2 (picked up, en route home); a stale entry for a
   // finished/recalled trip is harmless and pruned lazily below.
   depotDestinations: new Map(),
+  // Set by liveSimStart() right before connecting, cleared once applied in
+  // liveSimConnect()'s onopen - see that field's own comment for why this
+  // exists: /api/sim/start is a no-op (by design - see serve.py's
+  // start_sim_engine) whenever an engine from an earlier Start is already
+  // running, so the CLI args a fresh launch would have used (signal mode,
+  // advanced lane AI, speed) are silently NOT applied to it. Without this,
+  // picking e.g. "Auto (traffic-weighted)" in the dropdown and clicking
+  // Start against an already-running engine left it connected but still
+  // silently running in whatever mode it originally started in - looked
+  // exactly like "the dropdown doesn't do anything." Re-sending these once
+  // connected is harmless even against a genuinely freshly-launched engine
+  // (same values it already started with) and is deliberately NOT applied
+  // on the passive/automatic reconnect path (liveSimScheduleReconnect,
+  // page-load resume) - only an explicit Start click should ever override a
+  // possibly-already-running engine's live settings.
+  pendingStartSync: null,
 };
 
 const LIVE_SIM_PORT = 8766;
@@ -93,6 +109,7 @@ function liveSimConnect() {
   ws.onopen = () => {
     LiveSim.connected = true;
     LiveSim.reconnectAttempts = 0;
+    liveSimApplyPendingStartSync();
     updateLiveSimStatusUI();
   };
 
@@ -183,11 +200,11 @@ function liveSimConnect() {
       State.simLampOverrides.clear(); // switched back to Default mode - let the fixed-time math take back over
     }
 
-    // Density mode's live per-approach "red dot" weight (nodeId -> Map(wayId
-    // -> weight) - see sim_engine.cpp's buildStateJson) for the node
-    // inspector's "Traffic-density weight" section (see
-    // liveSimRenderApproachWeights) - same clear-when-absent pattern as the
-    // lamp overrides above.
+    // Auto/Density mode's live per-approach weight (nodeId -> Map(wayId
+    // -> weight) - see sim_engine.cpp's buildStateJson/redlights.hpp's
+    // AutoWeightBoard) for the node inspector's "Auto signal weight" section
+    // (see liveSimRenderApproachWeights) - same clear-when-absent pattern as
+    // the lamp overrides above.
     if (Array.isArray(msg.approachWeights)) {
       LiveSim.approachWeights.clear();
       for (const aw of msg.approachWeights) {
@@ -272,6 +289,20 @@ function liveSimDisconnect() {
 
 function liveSimSendCommand(obj) {
   if (LiveSim.ws && LiveSim.connected) LiveSim.ws.send(JSON.stringify(obj));
+}
+
+// Flushes LiveSim.pendingStartSync (see its own comment) onto a now-open
+// connection - called from liveSimConnect()'s onopen (the normal case), and
+// also directly from liveSimStart() for the rare edge case where a socket
+// was somehow already open at the moment Start was clicked (onopen won't
+// fire again for an already-open socket).
+function liveSimApplyPendingStartSync() {
+  if (!LiveSim.pendingStartSync) return;
+  const sync = LiveSim.pendingStartSync;
+  LiveSim.pendingStartSync = null;
+  liveSimSendCommand({ cmd: "setSignalMode", value: sync.signalMode });
+  liveSimSendCommand({ cmd: "setAdvancedLaneAI", value: sync.advancedLaneAI });
+  liveSimSendCommand({ cmd: "setSpeed", value: sync.speed });
 }
 
 /* ---------------- Click-to-select a vehicle + show its planned path ---------------- */
@@ -929,35 +960,38 @@ function liveSimRenderInfoPanel() {
   }
 }
 
-// Density mode's live per-approach "red dot" weight (see sim_engine.cpp's
-// buildStateJson "approachWeights" field and Vehicle::waitingLight) for a
-// selected SIGNALIZED node - called from simulation.js's renderInspector
-// right alongside the external-control panel, so selecting a traffic light
-// shows not just what it's doing but WHY (which approach is currently
-// winning under Density mode, and by how much). Returns a DOM node to
-// append, matching renderExternalControlPanel's own calling convention;
-// never throws/returns null even with no live data, just explains why.
+// Auto/Density mode's live per-approach weight (rewritten from scratch
+// 2026-09-02 - see sim_engine.cpp's buildStateJson "approachWeights" field
+// and redlights.hpp's AutoWeightBoard: each approach's total is every
+// queued vehicle's OWN elapsed seconds times its vehicle-type weight - car
+// 1x, motorcycle 0.5x, bus 10x, truck 0.1x) for a selected SIGNALIZED node -
+// called from simulation.js's renderInspector right alongside the
+// external-control panel, so selecting a traffic light shows not just what
+// it's doing but WHY (which approach is currently winning, and by how much).
+// Returns a DOM node to append, matching renderExternalControlPanel's own
+// calling convention; never throws/returns null even with no live data,
+// just explains why.
 function liveSimRenderApproachWeights(nodeId) {
   const wrap = el("div", {});
-  wrap.append(el("div", { class: "section-title" }, "Traffic-density weight (live)"));
+  wrap.append(el("div", { class: "section-title" }, "Auto signal weight (live)"));
   if (!LiveSim.connected || LiveSim.lastMeta.mode !== "density") {
     wrap.append(el("div", { class: "readonly" },
-      "Only tracked while the live engine is running in Traffic-density-based signal mode."));
+      "Only tracked while the live engine is running in Auto (traffic-weighted) signal mode."));
     return wrap;
   }
-  const weights = LiveSim.approachWeights.get(nodeId);
-  if (!weights || !weights.size) {
-    wrap.append(el("div", { class: "readonly" }, "No approach currently has a vehicle waiting here."));
+  const weightByWayId = LiveSim.approachWeights.get(nodeId);
+  if (!weightByWayId || !weightByWayId.size) {
+    wrap.append(el("div", { class: "readonly" }, "No approach currently has a vehicle queued here."));
     return wrap;
   }
-  const rows = Array.from(weights.entries()).sort((a, b) => b[1] - a[1]);
-  const topWayId = rows[0][1] > 0 ? rows[0][0] : null;
-  for (const [wayId, weight] of rows) {
-    const leading = wayId === topWayId;
+  const ranked = Array.from(weightByWayId.entries()).sort((a, b) => b[1] - a[1]);
+  const leadingWayId = ranked[0][1] > 0 ? ranked[0][0] : null;
+  for (const [wayId, weight] of ranked) {
+    const isLeading = wayId === leadingWayId;
     const row = el("div", { class: "field" },
-      el("label", {}, `${wayId}${leading ? " — leading" : ""}`),
+      el("label", {}, `${wayId}${isLeading ? " — leading" : ""}`),
       el("div", { class: "readonly" }, weight.toFixed(1)));
-    if (leading) row.style.fontWeight = "700";
+    if (isLeading) row.style.fontWeight = "700";
     wrap.append(row);
   }
   return wrap;
@@ -997,7 +1031,16 @@ async function liveSimStart() {
     if (!data.ok) { toast(data.error || "Could not start the simulation engine"); return; }
     LiveSim.engineShouldBeRunning = true;
     LiveSim.reconnectAttempts = 0;
+    // See LiveSim.pendingStartSync's own comment: /api/sim/start is a no-op
+    // (by design - see serve.py's start_sim_engine) when an engine from an
+    // earlier Start is already running, silently ignoring this call's
+    // concurrency/signalMode/etc - so explicitly re-push the settings this
+    // click actually asked for once connected, covering that case (harmless
+    // no-op against a genuinely freshly-launched engine, which already got
+    // the same values via its CLI args).
+    LiveSim.pendingStartSync = { signalMode, advancedLaneAI, speed };
     liveSimConnect();
+    if (LiveSim.connected) liveSimApplyPendingStartSync(); // ws was already open (see that function's own comment)
   } catch (e) {
     toast("Could not reach the server to start the simulation engine");
   } finally {
@@ -1181,7 +1224,7 @@ function updateLiveSimReadout() {
   if (!readoutEl) return;
   const m = LiveSim.lastMeta;
   const mins = Math.floor(m.t / 60), secs = Math.floor(m.t % 60);
-  const modeLabel = { default: "default", density: "density-based", emergency: "emergency-only" }[m.mode] || m.mode;
+  const modeLabel = { default: "default", density: "auto", emergency: "emergency-only" }[m.mode] || m.mode;
   readoutEl.textContent = `t=${mins}:${String(secs).padStart(2, "0")} · ${LiveSim.vehicles.size} active · `
     + `${m.completed}/${m.total} trips completed · signals: ${modeLabel}`;
 }
@@ -1240,7 +1283,7 @@ LiveSim.draw = function () {
   // since a fill can cover multiple disjoint quads added to the same path.
   const groups = new Map(); // type -> vehicle[]
   const emergencyVehicles = []; // ambulance/firetruck/police - EMERGENCY_VEHICLE_TYPES
-  const waiting = []; // Density mode's "red dot" queue state - see v.wt
+  const waiting = []; // Auto/Density mode's green queue-chain dot - see v.aw (seconds this vehicle has been queued)
   const stuck = []; // stopped >5s - see v.stk
   for (const v of LiveSim.vehicles.values()) {
     const ty = LIVE_SIM_STYLE[v.ty] ? v.ty : "car";
@@ -1248,7 +1291,7 @@ LiveSim.draw = function () {
     if (!arr) { arr = []; groups.set(ty, arr); }
     arr.push(v);
     if (EMERGENCY_VEHICLE_TYPES.has(ty)) emergencyVehicles.push(v);
-    if (v.wt) waiting.push(v);
+    if (v.aw) waiting.push(v);
     if (v.stk) stuck.push(v);
   }
 
@@ -1347,7 +1390,8 @@ LiveSim.draw = function () {
   }
 
   // Floating dot just above a vehicle's own on-screen rotated rectangle -
-  // shared by the Density-mode "waiting for the light" dot (green, v.wt)
+  // shared by the Auto/Density-mode queue-chain dot (green, v.aw - the
+  // vehicle's own elapsed queued seconds, rewritten from scratch 2026-09-02)
   // and the "stuck in traffic >5s" dot (magenta, v.stk - see
   // sim_engine.cpp's Vehicle::stoppedDurationSec/buildStateJson's "stk"
   // field). Uses each vehicle's OWN rotated half-extent (not just half its
@@ -1380,8 +1424,10 @@ LiveSim.draw = function () {
     ctx.fillStyle = color;
     ctx.fill();
   }
-  // Green, not red, so the Density-mode queue dot doesn't read as another
-  // red lamp/stop indicator next to the actual (red) signal glyphs.
+  // Green, not red, so the Auto/Density-mode queue-chain dot doesn't read as
+  // another red lamp/stop indicator next to the actual (red) signal glyphs -
+  // "the first car that starts waiting gets a green dot on top, any car
+  // that stops behind it gets its own dot too."
   liveSimDrawFloatingDots(waiting, "#06d6a0");
   // Magenta - a distinct color from every other live-sim marker (emergency
   // white/red-blue, waiting green, selection gold) so a genuinely stuck

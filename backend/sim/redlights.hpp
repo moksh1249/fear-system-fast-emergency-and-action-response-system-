@@ -3,26 +3,32 @@
 // Traffic-light control logic for the "traffic light revamped" simulation
 // engine (backend/sim/sim_engine.cpp) - deliberately split out of that file
 // so this module has NO access to Vehicle, RouteStep, or RoadGraph internals
-// (see road_graph.hpp/vehicles.hpp for those). Everything it knows about
-// live traffic comes in through one narrow channel: VehicleStopReport /
-// EmergencyReport, submitted by the caller once a vehicle has already been
-// observed stopped at a red light or is an ambulance approaching one - the
-// same kind of arms-length signal a real induction-loop sensor or connected-
-// vehicle GPS ping would give a physical signal controller. This module
-// never sees a vehicle's route or destination, so it has no way to "know"
-// what's about to arrive before it's actually there - only to react to
-// what's currently reported.
+// (see road_graph.hpp/vehicles.hpp for those). Everything it knows about a
+// live emergency vehicle comes in through one narrow channel: EmergencyReport,
+// submitted by the caller once an ambulance/firetruck/police vehicle is
+// already responding and either approaching a signalized junction or crossing
+// one - the same kind of arms-length signal a connected-vehicle GPS ping
+// would give a physical signal controller. This module never sees a
+// vehicle's route or destination, so it has no way to "know" what's about to
+// arrive before it's actually there - only to react to what's currently
+// reported.
 //
-// Two independent things live here:
+// Three independent things live here:
 //   - The static signal MODEL (SignalConfig/RedlightGroupConfig/parseSignal)
 //     and its fixed-time math (getPlainColor/getPairedColor/computeLampColor,
 //     a direct port of front-end/redlight.js) - this is map DATA (how a
-//     junction's lamps are configured), not live vehicle state, so it's not
-//     part of the reporting scheme at all.
-//   - RedlightController: the live, per-tick arbitration state for
-//     SignalMode::Density and emergency preemption (see sim_engine.cpp's own
-//     SignalMode comment for the three modes' full behaviour), built purely
-//     from reports submitted this tick.
+//     junction's lamps are configured), not live vehicle state.
+//   - RedlightController: the live, per-tick emergency-preemption state (see
+//     sim_engine.cpp's own SignalMode comment), built purely from
+//     EmergencyReports submitted this tick.
+//   - AutoWeightBoard (bottom of this file): SignalMode::Density's live
+//     per-approach weight board - rewritten from scratch 2026-09-02 per an
+//     explicit request to replace the old density-weight design rather than
+//     patch it further. Deliberately its own small class, separate from
+//     RedlightController, since it tracks a completely different kind of
+//     thing (a per-approach tally rebuilt fresh every tick) on a completely
+//     different lifecycle (RedlightController's preemption deadlines
+//     deliberately persist across ticks - see its own beginTick() comment).
 
 #include <algorithm>
 #include <array>
@@ -202,18 +208,19 @@ static GroupTurnInfo getGroupTurnInfo(const RedlightGroupConfig& g, double clock
 //     NON-preempted EmergencyOnly junction is deliberately left out of its
 //     lamps array - letting the client's identical fixed-time math render a
 //     real countdown timer instead of a frozen placeholder).
-//   - Density: reuses the unsignalized-junction arbitration already built in
-//     sim_engine.cpp's main loop for the "width of the intersection" fix
-//     (movementsCompatible, in road_graph.hpp) instead of a fixed phase
-//     table - a signalized junction's rank is its approach's live "red dot"
-//     weight (see RedlightController::reportStopped below: the count of
-//     vehicles currently reported waiting for this red light, plus the
-//     seconds each has been waiting, each scaled by vehiclePriorityWeight)
-//     rather than a fixed road class, so the busiest-AND-longest-waiting-
-//     AND-highest-priority approach simply outranks the others every tick -
-//     a live actuated-signal approximation with deliberately no fixed phase
-//     table/timer to advance or hold, and no knowledge of any vehicle's
-//     route beyond "it is here, right now, waiting."
+//   - Density ("Auto" in the UI): reuses the unsignalized-junction admission
+//     already built in sim_engine.cpp's main loop for the "width of the
+//     intersection" fix (movementsCompatible, in road_graph.hpp) instead of
+//     a fixed phase table - a signalized junction's rank is its approach's
+//     live weight from AutoWeightBoard (bottom of this file): for every
+//     vehicle currently queued at that approach (see sim_engine.cpp's main
+//     loop for the queue-chain that flags them), its OWN elapsed wait time
+//     in seconds times autoVehicleWeight(vehicleType), summed across the
+//     whole queue - so the busiest-AND-longest-waiting-AND-heaviest-class
+//     approach simply outranks the others every tick, a live actuated-signal
+//     approximation with deliberately no fixed phase table/timer to advance
+//     or hold, and no knowledge of any vehicle's route beyond "it is here,
+//     right now, queued."
 // Both modes' signalized junctions are ALSO subject to the same
 // emergency-preemption override described above (an emergency vehicle wins
 // outright regardless of mode); only Default mode has no ambulance-awareness
@@ -262,28 +269,16 @@ static std::string computeLampColor(const SignalConfig& signal, const std::strin
 }
 
 // ---------------------------------------------------------------------------
-// Live reporting interface - the ONLY way this module learns about traffic.
-// A vehicle (see vehicles.hpp) never talks to this module directly; the
-// simulation's main loop (sim_engine.cpp) observes a vehicle has been marked
-// stopped at a red light or is an emergency vehicle approaching one, and
-// submits a report on its behalf. Neither report carries a vehicle id,
-// route, or destination - just enough to answer "who's waiting where, in
-// what, and since when."
+// Live emergency-preemption reporting interface - the ONLY way
+// RedlightController learns about traffic. A vehicle (see vehicles.hpp)
+// never talks to this module directly; the simulation's main loop
+// (sim_engine.cpp) observes an emergency vehicle is approaching/transiting a
+// signalized junction and submits a report on its behalf. It carries no
+// vehicle id, route, or destination - just enough to answer "who needs this
+// junction held, for what movement, and since when." (AutoWeightBoard, at
+// the bottom of this file, has its own separate, simpler feed - see its own
+// comment - since it isn't a "report" in this same sense.)
 // ---------------------------------------------------------------------------
-
-// One vehicle's self-report, submitted once it has already been observed
-// stopped at a red light this tick. gpsX/gpsY is its current position in
-// this map's own projected coordinate space (a metric projection of real
-// lon/lat - see osm_to_json.py's project()) - carried here so this module's
-// reports are traceable back to a real place on the map even though it never
-// looks at a route to get there, the same way a real connected-vehicle GPS
-// ping or induction-loop sensor only ever reports "something is here now."
-struct VehicleStopReport {
-    std::string fromWayId, movement, toWayId; // which approach/turn this vehicle is queued for
-    double gpsX = 0, gpsY = 0;
-    std::string vehicleType;
-    double waitStartTime = -1;
-};
 
 // An emergency-capable vehicle's (ambulance/firetruck/police) self-report
 // while "responding" (see handleCommand's triggerEmergency/dispatchIncident)
@@ -364,49 +359,17 @@ struct PreemptStatus {
     double arrDirX = 0, arrDirY = 0;
 };
 
-// Density mode's per-vehicle-type priority weight: a bus carries many
-// passengers so clearing it quickly benefits far more people than clearing
-// one car, while a truck can tolerate sitting at a red light longer than the
-// average driver - so a queued bus counts as 10 "vehicles waiting" toward
-// its approach's weight, a queued truck counts as half of one, and
-// everything else (car, motorcycle, ambulance not currently preempting)
-// counts as exactly one, unchanged from before this weighting existed.
-static double vehiclePriorityWeight(const std::string& vehicleType) {
-    if (vehicleType == "bus") return 10.0;
-    if (vehicleType == "truck") return 0.5;
-    return 1.0;
-}
-
-// Live, per-tick arbitration state for Density mode and emergency
-// preemption. Constructed once and kept for the whole run; beginTick()
-// clears the previous tick's reports so a lull correctly decays back to
-// zero instead of latching a stale weight or a stale preemption forever.
-// Deliberately plain data + reports in, queries out - no Vehicle/RoadGraph
-// type ever appears in this class's interface.
+// Live, per-tick emergency-preemption state. Constructed once and kept for
+// the whole run. Deliberately plain data + reports in, queries out - no
+// Vehicle/RoadGraph type ever appears in this class's interface.
 class RedlightController {
 public:
-    // emergencyPreempt_ is deliberately NOT cleared here (unlike
-    // densityWeight_) - it's a set of deadlines, not a per-tick report tally,
-    // and it prunes itself lazily via preempting()'s own simClock check. See
-    // reportEmergency's comment for why that's what lets a short post-
-    // crossing grace period survive across ticks with no separate
-    // crossing-time bookkeeping in the caller.
-    void beginTick() { densityWeight_.clear(); }
-
-    // Density mode's per-approach "red dot" weight (see SignalMode's own
-    // comment) - accumulated from the END of last tick's reports, one tick
-    // of lag behind the caller's own gate outcome for this tick, same as the
-    // ordinary impatience-rank feedback loop the rest of this project's
-    // arbitration already accepts.
-    void reportStopped(int junctionIdx, const VehicleStopReport& r, double simClock) {
-        double waited = std::max(0.0, simClock - r.waitStartTime);
-        densityWeight_[key(junctionIdx, r.fromWayId)] += (1.0 + waited) * vehiclePriorityWeight(r.vehicleType);
-    }
-
-    double densityWeightFor(int junctionIdx, const std::string& fromWayId) const {
-        auto it = densityWeight_.find(key(junctionIdx, fromWayId));
-        return it != densityWeight_.end() ? it->second : 0.0;
-    }
+    // emergencyPreempt_ is a set of DEADLINES, not a per-tick tally, and it
+    // prunes itself lazily via preemptStatus()'s own simClock check - so,
+    // unlike AutoWeightBoard's per-tick board below, there is nothing to
+    // clear at the start of a tick here. See reportEmergency's own comment
+    // for why that's what lets a short post-crossing grace period survive
+    // across ticks with no separate crossing-time bookkeeping in the caller.
 
     // Real preemption, not a rank bonus: only one approach can hold an
     // emergency vehicle at a time for a given junction, so last-writer-wins
@@ -450,14 +413,86 @@ public:
     }
 
 private:
-    static std::string key(int junctionIdx, const std::string& fromWayId) { return std::to_string(junctionIdx) + "|" + fromWayId; }
-
     struct EmergencyHold {
         std::string fromWayId, movement, toWayId;
         double arrDirX = 0, arrDirY = 0;
         double clearUntil = -1.0, holdUntil = -1.0;
     };
 
-    std::unordered_map<std::string, double> densityWeight_;
     std::unordered_map<int, EmergencyHold> emergencyPreempt_;
+};
+
+// ---------------------------------------------------------------------------
+// SignalMode::Density ("Auto" in the UI) - rewritten from scratch 2026-09-02
+// per an explicit request to replace the previous density-weight design
+// rather than continue patching it. Everything below is new: the per-type
+// weight table, the board that tallies it per approach, and the wire-format
+// pieces in sim_engine.cpp that feed and consume it.
+//
+// The rule, exactly as specified: every vehicle currently queued at a red
+// light contributes (how many seconds IT has personally been queued) times
+// (its own vehicle-type weight) to its approach's total; the approach with
+// the highest total is the one sim_engine.cpp's main loop lets through, via
+// the same movementsCompatible-gated admission every unsignalized junction
+// already uses (that admission mechanism is shared infrastructure, not part
+// of this rewrite - see road_graph.hpp).
+//
+// The "queued" determination and the per-vehicle green-dot chain (first
+// vehicle stopped at the light gets the dot, each vehicle that stops behind
+// it picks up its own dot too, each tracking its OWN wait time) live in
+// sim_engine.cpp's main loop, since that is the only code with access to
+// Vehicle/lane-group state - this file never sees a Vehicle, only the
+// (junction, approach, vehicle type, wait seconds) numbers the caller
+// chooses to feed in below.
+// ---------------------------------------------------------------------------
+
+// Per-vehicle-type weight for the Auto/Density formula. A bus full of
+// passengers is worth clearing far more than one car (10x); a truck can sit
+// a while longer than everyone else (0.1x); a motorcycle takes up a fraction
+// of a car's road space and queues briefly (0.5x); a plain car is the
+// baseline (1x). Anything not listed (ambulance/firetruck/police not
+// currently preempting, or any future type) also falls back to the car
+// baseline - the least surprising default for a type this formula was never
+// told anything special about.
+static double autoVehicleWeight(const std::string& vehicleType) {
+    if (vehicleType == "bus") return 10.0;
+    if (vehicleType == "truck") return 0.1;
+    if (vehicleType == "motorcycle") return 0.5;
+    return 1.0;
+}
+
+// The live per-approach weight board for Auto/Density mode. Rebuilt fresh
+// every tick (unlike RedlightController's deadline-based preemption state
+// above, there is no "grace period" concept here - an approach with nobody
+// queued this tick is worth exactly 0, immediately, no decay needed since
+// there's nothing to decay from). One board instance is kept for the whole
+// run; beginTick() must be called once per physics tick before any
+// addWait() calls, so a queue that has fully cleared doesn't keep scoring
+// points from a tick that's no longer true.
+class AutoWeightBoard {
+public:
+    void beginTick() { total_.clear(); }
+
+    // Called once per currently-queued vehicle (see sim_engine.cpp's main
+    // loop) with how many seconds THAT vehicle has personally been queued -
+    // not the queue's oldest vehicle, not a flat per-vehicle count. A vehicle
+    // that only just stopped this instant contributes 0 for now and starts
+    // adding real weight from the next tick it's still there, which is
+    // exactly "weighing time of each vehicle, in seconds" as specified.
+    void addWait(int junctionIdx, const std::string& fromWayId, const std::string& vehicleType, double waitedSeconds) {
+        if (waitedSeconds <= 0) return;
+        total_[approachKey(junctionIdx, fromWayId)] += waitedSeconds * autoVehicleWeight(vehicleType);
+    }
+
+    double weightFor(int junctionIdx, const std::string& fromWayId) const {
+        auto it = total_.find(approachKey(junctionIdx, fromWayId));
+        return it != total_.end() ? it->second : 0.0;
+    }
+
+private:
+    static std::string approachKey(int junctionIdx, const std::string& fromWayId) {
+        return std::to_string(junctionIdx) + "|" + fromWayId;
+    }
+
+    std::unordered_map<std::string, double> total_;
 };

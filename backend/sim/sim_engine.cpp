@@ -41,15 +41,18 @@
 //     websocket, no frontend, by design (see the plan's phase breakdown).
 //
 // Module layout (this file is the orchestrator/networking layer only):
-//   - redlights.hpp  - the signal model (fixed-time phase math) and
-//     RedlightController, the live Density-mode/emergency-preemption
-//     arbiter. Knows nothing about Vehicle or RoadGraph - it only ever sees
-//     VehicleStopReport/EmergencyReport, small "here's my position and type,
-//     right now" messages submitted below (see step 3), the same arms-
-//     length signal a real induction-loop sensor or connected-vehicle GPS
-//     ping would give a physical signal controller. This is deliberate: it's
-//     what makes Density mode a genuine reactive/actuated approximation
-//     rather than a shortcut that peeks at any vehicle's planned route.
+//   - redlights.hpp  - the signal model (fixed-time phase math),
+//     RedlightController (the live emergency-preemption arbiter), and
+//     AutoWeightBoard (Density/"Auto" mode's live per-approach weight board -
+//     rewritten from scratch 2026-09-02). Neither arbiter knows anything
+//     about Vehicle or RoadGraph - RedlightController only ever sees small
+//     EmergencyReport messages submitted below (see step 3), the same arms-
+//     length signal a connected-vehicle GPS ping would give a physical
+//     signal controller, and AutoWeightBoard only ever sees a plain
+//     (junction, approach, vehicle type, seconds queued) tuple per queued
+//     vehicle. This is deliberate: it's what makes Auto/Density mode a
+//     genuine reactive/actuated approximation rather than a shortcut that
+//     peeks at any vehicle's planned route.
 //   - road_graph.hpp - the static map/graph model (RoadGraph, buildRoadGraph)
 //     both other modules read.
 //   - vehicles.hpp   - Vehicle/TripSpec, routing (resolveRoute), lane
@@ -444,7 +447,8 @@ struct JctCandidate {
 // supplied), so no escaping is needed for it.
 static std::string buildStateJson(double simClock, const std::vector<Vehicle>& vehicles, const RoadGraph& rg,
                                    long long totalSpawned, long long totalCompleted, size_t totalTrips, SignalMode signalMode,
-                                   const RedlightController& redlights,
+                                   const RedlightController& redlights, const AutoWeightBoard& autoWeights,
+                                   const std::unordered_map<int, std::unordered_map<std::string, bool>>& densityGranted,
                                    const std::unordered_map<std::string, TypeStats>& completedByType,
                                    const EmergencyStats& emergencyStats, long long totalStuckVehicles, bool isFinal = false) {
     std::string out;
@@ -529,46 +533,65 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
                     colors[i] = computeLampColor(jn.signal, rg.nodeId[jn.primaryNodeIdx], rg.redlightGroups,
                                                   approaches[i]->fromWayId, approaches[i]->movement, simClock);
             } else {
-                // Density mode: replicate the SAME greedy compatibility
-                // acceptance the real per-tick admission uses (see step 3's
-                // candidatesForJunction loop above), applied to EVERY
-                // approach at this junction - not just ones with a vehicle
-                // currently waiting. Checking each approach only against
-                // jn.inFlight in isolation (an earlier version of this did
-                // exactly that) is wrong: during a lull with nothing actually
-                // mid-crossing, every approach reads as "compatible with
-                // nothing" and would display green simultaneously even when
-                // they are NOT mutually compatible with each other - painting
-                // the junction as safe for everyone at once when real
-                // vehicles would never actually be granted that together.
-                // Ranking by the same RedlightController weight shown in the
-                // sidebar keeps the displayed set consistent with what real
-                // vehicles would actually be granted if they all showed up.
-                // This arbitration has no idea a preemption might be pending
-                // (density weight alone decides it) - step 2 below overrides
-                // its pick as needed.
-                std::vector<const JunctionEdge*> order = approaches;
-                std::sort(order.begin(), order.end(), [&](const JunctionEdge* a, const JunctionEdge* b) {
-                    auto wOf = [&](const JunctionEdge* e) { return redlights.densityWeightFor((int)ji, e->fromWayId); };
-                    double wa = wOf(a), wb = wOf(b);
-                    if (wa != wb) return wa > wb;
-                    return (a->fromWayId + a->movement) < (b->fromWayId + b->movement);
+                // Auto/Density mode: ground truth for what's actually green
+                // is whatever the main loop's real per-tick arbitration
+                // (candidatesForJunction - see step 3) already decided for
+                // any approach that had a real vehicle competing this tick -
+                // densityGranted, filled in there and passed in here. The
+                // very first version of this rendering path (2026-09-02)
+                // instead recomputed its OWN ranking from scratch every
+                // broadcast, using a different tie-break (alphabetical here
+                // vs. first-arrived in the real arbitration's `rank`/
+                // `arrivalTime` sort) and considering EVERY configured
+                // approach as a candidate, not just ones with a real vehicle
+                // there. That was harmless once an approach's weight pulled
+                // clearly ahead of its rivals, but a real, observed bug for
+                // any approach still at/near a TIED weight - every fresh
+                // queue starts at weight exactly 0 (see AutoWeightBoard), and
+                // under light/moderate traffic a queue often clears before
+                // its weight ever climbs enough to break that tie - so the
+                // two computations could pick DIFFERENT winners: a real car
+                // the actual physics just let through could render red as if
+                // it ran the light, while some other, possibly-EMPTY approach
+                // rendered green instead. Only approaches with NO real
+                // candidate this tick (genuinely nobody there) fall through
+                // to the old weight-ranked synthetic fill below - purely
+                // cosmetic, so a signalized junction doesn't render all-red
+                // during a lull with nothing mid-crossing - seeded with the
+                // real-granted approaches as already "admitted" so it can
+                // never contradict them.
+                auto grantedIt = densityGranted.find((int)ji);
+                std::vector<const JunctionEdge*> admitted;
+                std::vector<const JunctionEdge*> undecided;
+                for (const JunctionEdge* a : approaches) {
+                    bool hadRealCandidate = false, wasGranted = false;
+                    if (grantedIt != densityGranted.end()) {
+                        auto git = grantedIt->second.find(a->fromWayId);
+                        if (git != grantedIt->second.end()) { hadRealCandidate = true; wasGranted = git->second; }
+                    }
+                    if (hadRealCandidate) { if (wasGranted) admitted.push_back(a); }
+                    else undecided.push_back(a);
+                }
+                std::sort(undecided.begin(), undecided.end(), [&](const JunctionEdge* x, const JunctionEdge* y) {
+                    double wx = autoWeights.weightFor((int)ji, x->fromWayId);
+                    double wy = autoWeights.weightFor((int)ji, y->fromWayId);
+                    if (wx != wy) return wx > wy;
+                    return (x->fromWayId + x->movement) < (y->fromWayId + y->movement);
                 });
-                std::vector<const JunctionEdge*> greenList;
-                for (const JunctionEdge* c : order) {
-                    bool ok = true;
-                    for (auto& f : jn.inFlight) {
-                        if (!movementsCompatible(c->fromWayId, c->movement, c->arrDirX, c->arrDirY, c->toWayId,
-                                                  f.fromWayId, f.movement, f.arrDirX, f.arrDirY, f.toWayId)) { ok = false; break; }
+                for (const JunctionEdge* candidate : undecided) {
+                    bool conflicts = false;
+                    for (auto& flying : jn.inFlight) {
+                        if (!movementsCompatible(candidate->fromWayId, candidate->movement, candidate->arrDirX, candidate->arrDirY, candidate->toWayId,
+                                                  flying.fromWayId, flying.movement, flying.arrDirX, flying.arrDirY, flying.toWayId)) { conflicts = true; break; }
                     }
-                    if (ok) for (const JunctionEdge* other : greenList) {
-                        if (!movementsCompatible(c->fromWayId, c->movement, c->arrDirX, c->arrDirY, c->toWayId,
-                                                  other->fromWayId, other->movement, other->arrDirX, other->arrDirY, other->toWayId)) { ok = false; break; }
+                    if (!conflicts) for (const JunctionEdge* already : admitted) {
+                        if (!movementsCompatible(candidate->fromWayId, candidate->movement, candidate->arrDirX, candidate->arrDirY, candidate->toWayId,
+                                                  already->fromWayId, already->movement, already->arrDirX, already->arrDirY, already->toWayId)) { conflicts = true; break; }
                     }
-                    if (ok) greenList.push_back(c);
+                    if (!conflicts) admitted.push_back(candidate);
                 }
                 for (size_t i = 0; i < approaches.size(); ++i)
-                    colors[i] = std::find(greenList.begin(), greenList.end(), approaches[i]) != greenList.end() ? "green" : "red";
+                    colors[i] = std::find(admitted.begin(), admitted.end(), approaches[i]) != admitted.end() ? "green" : "red";
             }
             // Step 2: preemption overrides on top of the ordinary colors
             // above - matching the main loop's step 3 gating exactly (see
@@ -607,29 +630,29 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
         }
         out += "]";
     }
-    // Density mode's live per-approach "red dot" weight (see the main loop's
-    // step 3 and RedlightController::reportStopped) - streamed unkeyed by
-    // movement (one entry per fromWayId, not per lamp) purely for display:
-    // the frontend's node inspector shows this when a signalized junction is
-    // selected, so a user can see WHY a given approach is winning (or not)
-    // under Density mode. Only ever non-empty in Density mode; harmless/
-    // empty otherwise.
+    // Auto/Density mode's live per-approach weight (seconds-queued x
+    // vehicle-type weight, summed per approach - see redlights.hpp's
+    // AutoWeightBoard) - streamed unkeyed by movement (one entry per
+    // fromWayId, not per lamp) purely for display: the frontend's node
+    // inspector shows this when a signalized junction is selected, so a user
+    // can see WHY a given approach is winning (or not). Only ever non-empty
+    // in Auto/Density mode; harmless/empty otherwise.
     if (signalMode == SignalMode::Density) {
         out += ",\"approachWeights\":[";
-        bool firstW = true;
+        bool firstWeightEntry = true;
         for (size_t ji = 0; ji < rg.junctions.size(); ++ji) {
             const JunctionInfo& jn = rg.junctions[ji];
             if (!jn.signal.present) continue;
-            std::unordered_set<std::string> seenWay;
+            std::unordered_set<std::string> seenApproachWay;
             for (const JunctionEdge& je : rg.junctionEdges) {
                 if (je.junctionIdx != (int)ji) continue;
-                if (!seenWay.insert(je.fromWayId).second) continue;
-                double w = redlights.densityWeightFor((int)ji, je.fromWayId);
-                if (!firstW) out += ",";
-                firstW = false;
+                if (!seenApproachWay.insert(je.fromWayId).second) continue;
+                double weight = autoWeights.weightFor((int)ji, je.fromWayId);
+                if (!firstWeightEntry) out += ",";
+                firstWeightEntry = false;
                 out += "{\"nodeId\":"; appendJsonString(out, rg.nodeId[jn.primaryNodeIdx]);
                 out += ",\"wayId\":"; appendJsonString(out, je.fromWayId);
-                out += ",\"weight\":"; appendNum(w, 1);
+                out += ",\"weight\":"; appendNum(weight, 1);
                 out += "}";
             }
         }
@@ -733,10 +756,14 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
         out += ",\"l\":"; appendNum(v.length, 1);
         out += ",\"w\":"; appendNum(v.width, 1);
         out += ",\"ty\":\""; out += v.vehicleType; out += "\"";
-        // "Waiting for the light" red dot (Density mode only - see the main
-        // loop's step 3) - omitted rather than sent as 0 for every other
-        // vehicle, matching this function's existing sparse-field convention.
-        if (v.waitingLight) out += ",\"wt\":1";
+        // Auto/Density mode's green queue-chain dot (see vehicles.hpp's
+        // Vehicle::autoDotOn/autoDotSince and the main loop's step 3) - the
+        // actual number of seconds THIS vehicle has personally been queued,
+        // the same number AutoWeightBoard is scoring it by, so the frontend
+        // dot can reflect real elapsed time rather than a bare on/off flag.
+        // Omitted rather than sent as 0 for every other vehicle, matching
+        // this function's existing sparse-field convention.
+        if (v.autoDotOn) { out += ",\"aw\":"; appendNum(std::max(0.0, simClock - v.autoDotSince), 1); }
         // "ep" (emergencyPhase, only while v.emergency): 1 = still en route
         // to the incident, 2 = incident reached, now en route to its home
         // depot - lets the frontend's Emergency Control sidebar know when a
@@ -1199,14 +1226,26 @@ int main(int argc, char** argv) {
 
         std::unordered_map<std::string, TypeStats> completedByType;
         EmergencyStats emergencyStats;
-        // Live signal-control arbiter (see redlights.hpp) - the only thing
-        // in this whole file that decides Density-mode ranking/emergency
-        // preemption, and it does so purely from VehicleStopReport/
-        // EmergencyReport values submitted fresh each physics tick in step 3
-        // below. Declared here (outside the per-tick rep loop) so the last
-        // tick's reports are still in scope for step 7's broadcast, which
-        // only runs once per OUTER iteration.
+        // Live signal-control arbiters (see redlights.hpp) - the only things
+        // in this whole file that decide emergency preemption
+        // (RedlightController) and Auto/Density-mode ranking (AutoWeightBoard,
+        // rewritten from scratch 2026-09-02), each built purely from values
+        // submitted fresh each physics tick in step 3 below. Declared here
+        // (outside the per-tick rep loop) so the last tick's values are still
+        // in scope for step 7's broadcast, which only runs once per OUTER
+        // iteration.
         RedlightController redlights;
+        AutoWeightBoard autoWeights;
+        // Ground truth for Density mode's rendered lamp colors: which
+        // (junctionIdx, fromWayId) approaches actually had a real vehicle
+        // competing for entry THIS tick (map present at all) and whether the
+        // real arbitration below (candidatesForJunction) actually granted it
+        // (bool value) - see buildStateJson's Density branch for why
+        // rendering must consult this instead of re-deriving its own
+        // ranking from scratch. Declared here (outside the per-tick rep
+        // loop), like autoWeights, so the last tick's values are still in
+        // scope for step 7's broadcast.
+        std::unordered_map<int, std::unordered_map<std::string, bool>> densityGranted;
 
         // Persistent per-tick scratch buffers for the live per-chain-edge
         // congestion tracking (see RoadGraph::chainEdgeLiveSpeed's own
@@ -1297,7 +1336,7 @@ int main(int argc, char** argv) {
                 v.spawnSimTime = simClock; v.waitTimeSec = 0; v.arrivalAtStopLineTime = -1;
                 v.homeAmenityId = t.homeAmenityId;
                 v.emergency = false; v.emergencyPhase = 0; v.dispatchTime = -1; v.incidentArrivalTime = -1;
-                v.waitingLight = false; v.waitStartTime = -1;
+                v.autoDotOn = false; v.autoDotSince = -1;
                 // Live-traffic rerouting - destNodeId anchors every future
                 // reroute to the SAME destination. nextRerouteAt is
                 // staggered per-vehicle across the FULL ~30s cadence
@@ -1465,11 +1504,13 @@ int main(int argc, char** argv) {
             // starve every other one instantly.
             for (auto& v : vehicles) v.gate = 0;
 
-            // Clears last tick's reports (see RedlightController::beginTick)
-            // before this tick submits fresh ones below - both the emergency
-            // scan and the density-report loop feed the SAME controller, so
-            // one beginTick() covers both.
-            redlights.beginTick();
+            // Clears last tick's Auto/Density weight tally (see
+            // AutoWeightBoard::beginTick) before this tick submits fresh
+            // ones below - RedlightController's own emergency-preemption
+            // state deliberately has nothing to clear here (see its own
+            // header comment), so only AutoWeightBoard needs this.
+            autoWeights.beginTick();
+            densityGranted.clear();
 
             // Emergency preemption (EmergencyOnly AND Density mode - Default
             // mode has no emergency-vehicle-awareness at all, see
@@ -1575,25 +1616,22 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Density mode's per-approach "red dot" weight: every vehicle
-            // already marked waitingLight (see below) submits a
-            // VehicleStopReport - its approach, current position, vehicle
-            // type (bus/truck get RedlightController::vehiclePriorityWeight's
-            // 10x/0.5x multiplier), and how long it's been waiting - to
-            // `redlights`, which is the only thing that turns those reports
-            // into a weight. Built from the END of LAST tick's waiting
-            // state, one tick of lag behind this tick's own gate outcome
-            // (decided below), same as the ordinary impatience-rank feedback
-            // loop already accepted throughout this file.
+            // Auto/Density mode's per-approach weight board (rewritten from
+            // scratch 2026-09-02 - see redlights.hpp's AutoWeightBoard): every
+            // vehicle currently showing its green queue-chain dot (autoDotOn,
+            // set below from LAST tick's gate outcome - one tick of lag,
+            // same as the ordinary impatience-rank feedback loop already
+            // accepted throughout this file) feeds its OWN elapsed queue time
+            // in seconds into its approach's tally, weighted by vehicle type.
             if (signalMode == SignalMode::Density) {
                 for (auto& v : vehicles) {
-                    if (!v.active || !v.waitingLight || v.route[v.routeIdx].isJunction) continue;
+                    if (!v.active || !v.autoDotOn || v.route[v.routeIdx].isJunction) continue;
                     if (v.routeIdx + 1 >= v.route.size()) continue;
                     const RouteStep& nxt = v.route[v.routeIdx + 1];
                     if (!nxt.isJunction) continue;
                     const JunctionEdge& je = rg.junctionEdges[nxt.edgeIndex];
-                    VehiclePosition pos = vehicleWorldPosition(rg, v);
-                    redlights.reportStopped(je.junctionIdx, {je.fromWayId, je.movement, je.toWayId, pos.x, pos.y, v.vehicleType, v.waitStartTime}, simClock);
+                    double queuedSeconds = v.autoDotSince >= 0 ? std::max(0.0, simClock - v.autoDotSince) : 0.0;
+                    autoWeights.addWait(je.junctionIdx, je.fromWayId, v.vehicleType, queuedSeconds);
                 }
             }
 
@@ -1674,18 +1712,26 @@ int main(int argc, char** argv) {
                     // Effective rank climbs with wait time (see
                     // IMPATIENCE_SEC's own comment) so a low-class approach
                     // isn't starved forever behind a busier cross-street. A
-                    // signalized junction running Density mode instead of
-                    // the fixed-time branch above (see redlights.hpp's
-                    // SignalMode comment) swaps in that mode's own reported
-                    // "red dot" weight in place of the plain road-class
+                    // signalized junction running Auto/Density mode instead
+                    // of the fixed-time branch above (see redlights.hpp's
+                    // SignalMode comment) swaps in that mode's own live
+                    // AutoWeightBoard total in place of the plain road-class
                     // rank; a genuinely unsignalized junction (any mode)
                     // always uses the plain road-class rank.
                     double waited = std::max(0.0, simClock - fv.arrivalAtStopLineTime);
                     double rank = (jn.signal.present && signalMode == SignalMode::Density)
-                        ? redlights.densityWeightFor(je.junctionIdx, je.fromWayId)
+                        ? autoWeights.weightFor(je.junctionIdx, je.fromWayId)
                         : je.priorityRank + waited / IMPATIENCE_SEC;
                     candidatesForJunction[je.junctionIdx].push_back({frontVi, je.fromWayId, je.movement, je.toWayId,
                         je.arrDirX, je.arrDirY, je.lengthM, je.speedMps, rank, fv.arrivalAtStopLineTime});
+                    // Real candidate this tick - default not-yet-granted
+                    // (flipped to true below iff arbitration actually admits
+                    // it); only recorded for signalized junctions since only
+                    // those are ever rendered as lamps. emplace so a sibling
+                    // lane group sharing this fromWayId (e.g. a left-turn
+                    // lane alongside a through lane) doesn't reset an
+                    // already-recorded entry back to false.
+                    if (jn.signal.present) densityGranted[je.junctionIdx].emplace(je.fromWayId, false);
                     fv.gate = 2; // tentatively closed, possibly flipped below
                 }
             }
@@ -1733,39 +1779,48 @@ int main(int argc, char** argv) {
                     if (!ok) continue;
                     accepted.push_back(c);
                     vehicles[c->vi].gate = 1;
+                    if (jn.signal.present) {
+                        auto dgIt = densityGranted.find(jidx);
+                        if (dgIt != densityGranted.end()) dgIt->second[c->fromWayId] = true;
+                    }
                     jn.inFlight.push_back({simClock + c->lengthM / std::max(0.1, c->speedMps) + MIN_DISCHARGE_GAP_SEC,
                                             c->fromWayId, c->movement, c->toWayId, c->arrDirX, c->arrDirY});
                 }
             }
 
-            // Density mode's "waiting for the light" red-dot state (see
-            // vehicles.hpp's Vehicle::waitingLight/waitStartTime): a
-            // follower is marked waiting purely from sharing its front
-            // vehicle's now-finalized gate (only front vehicles are ever
-            // gated directly - see above; followers queue up behind them via
-            // ordinary IDM car-following), which is exactly what makes the
-            // red dot "chain" backward through a queue as it forms. Feeds
-            // NEXT tick's VehicleStopReport submissions above, and is
-            // streamed to the frontend as-is (see buildStateJson's per-
-            // vehicle "wt" field).
-            for (auto& v : vehicles) if (v.active) v.waitingLight = false;
+            // Auto/Density mode's green queue-chain dot (rewritten from
+            // scratch 2026-09-02 - see vehicles.hpp's Vehicle::autoDotOn/
+            // autoDotSince): "the first car that starts waiting gets a green
+            // dot on top; any car that stops behind it gets its own green
+            // dot too, and so on down the chain." Only a lane group's FRONT
+            // vehicle is ever gated directly (see the candidate loop above);
+            // everyone else in that same group queues up behind it purely
+            // via ordinary IDM car-following, so simply checking "is this
+            // group's front vehicle red, and is THIS vehicle actually
+            // stopped" against every member of the group is exactly what
+            // makes the dot chain backward through a queue as it forms and
+            // forward again as it clears - no separate follower-tracking
+            // needed. Feeds NEXT tick's AutoWeightBoard submissions above,
+            // and is streamed to the frontend as each vehicle's own elapsed
+            // seconds (see buildStateJson's per-vehicle "aw" field).
+            for (auto& v : vehicles) if (v.active) v.autoDotOn = false;
             if (signalMode == SignalMode::Density) {
-                for (auto& [k, idxs] : groups) {
+                for (auto& [laneKey, idxs] : groups) {
                     if (idxs.empty()) continue;
-                    Vehicle& gfv = vehicles[idxs.back()];
-                    if (gfv.gate != 2 || gfv.route[gfv.routeIdx].isJunction || gfv.routeIdx + 1 >= gfv.route.size()) continue;
-                    const RouteStep& gnxt = gfv.route[gfv.routeIdx + 1];
-                    if (!gnxt.isJunction) continue;
-                    if (!rg.junctions[rg.junctionEdges[gnxt.edgeIndex].junctionIdx].signal.present) continue;
+                    Vehicle& laneFront = vehicles[idxs.back()];
+                    if (laneFront.gate != 2 || laneFront.route[laneFront.routeIdx].isJunction || laneFront.routeIdx + 1 >= laneFront.route.size()) continue;
+                    const RouteStep& laneNext = laneFront.route[laneFront.routeIdx + 1];
+                    if (!laneNext.isJunction) continue;
+                    if (!rg.junctions[rg.junctionEdges[laneNext.edgeIndex].junctionIdx].signal.present) continue;
                     for (int vi : idxs) {
-                        Vehicle& v = vehicles[vi];
-                        if (v.speed < 0.5) v.waitingLight = true;
+                        Vehicle& queuedVeh = vehicles[vi];
+                        if (queuedVeh.speed < 0.5) queuedVeh.autoDotOn = true;
                     }
                 }
             }
             for (auto& v : vehicles) {
-                if (v.waitingLight) { if (v.waitStartTime < 0) v.waitStartTime = simClock; }
-                else v.waitStartTime = -1;
+                if (v.autoDotOn) { if (v.autoDotSince < 0) v.autoDotSince = simClock; }
+                else v.autoDotSince = -1;
             }
 
             // Merge-point awareness: if more than one current-edge group's
@@ -2155,7 +2210,7 @@ int main(int argc, char** argv) {
             // that anyway).
             if (!headless) {
                 server.broadcast(buildStateJson(simClock, vehicles, rg, totalSpawned, totalCompleted, trips.size(), signalMode,
-                                                 redlights, completedByType, emergencyStats, totalStuckVehicles));
+                                                 redlights, autoWeights, densityGranted, completedByType, emergencyStats, totalStuckVehicles));
                 double elapsed = std::chrono::duration<double>(Clock::now() - tickWallStart).count();
                 if (elapsed < dt) std::this_thread::sleep_for(std::chrono::duration<double>(dt - elapsed));
             }
@@ -2167,7 +2222,7 @@ int main(int argc, char** argv) {
         // instead of only when someone happened to click Stop.
         if (!headless) {
             server.broadcast(buildStateJson(simClock, vehicles, rg, totalSpawned, totalCompleted, trips.size(), signalMode,
-                                             redlights, completedByType, emergencyStats, totalStuckVehicles, /*isFinal=*/true));
+                                             redlights, autoWeights, densityGranted, completedByType, emergencyStats, totalStuckVehicles, /*isFinal=*/true));
         }
         if (!headless) std::cerr << "[sim] stopping (t=" << simClock << "s, stopRequested=" << stopRequested << ")\n";
 
