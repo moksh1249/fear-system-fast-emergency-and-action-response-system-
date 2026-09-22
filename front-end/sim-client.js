@@ -82,6 +82,12 @@ const LiveSim = {
   // page-load resume) - only an explicit Start click should ever override a
   // possibly-already-running engine's live settings.
   pendingStartSync: null,
+  // The vehicle-source mode the ENGINE reports it is actually in (see
+  // sim_engine.cpp's SimMode, streamed on every state frame). Kept separate
+  // from the sidebar select's value because the two can legitimately differ:
+  // this page can attach to an engine somebody else already started in the
+  // other mode, and the engine - not the dropdown - is the source of truth.
+  engineSimMode: "simulation",
 };
 
 const LIVE_SIM_PORT = 8766;
@@ -138,7 +144,17 @@ function liveSimConnect() {
     }
     if (msg.type !== "state") return;
 
-    LiveSim.lastMeta = { t: msg.t, spawned: msg.spawned, completed: msg.completed, total: msg.total, mode: msg.mode || "default" };
+    LiveSim.lastMeta = { t: msg.t, spawned: msg.spawned, completed: msg.completed, total: msg.total, mode: msg.mode || "default",
+                         simMode: msg.simMode || "simulation", liveVehicles: msg.liveVehicles || 0 };
+    // Reconcile the sidebar with what the engine says it is doing, so
+    // attaching to an already-running engine shows its real mode rather than
+    // whatever this page's dropdown happened to be left on.
+    if (LiveSim.lastMeta.simMode !== LiveSim.engineSimMode) {
+      LiveSim.engineSimMode = LiveSim.lastMeta.simMode;
+      const sel = $("#liveSimModeSelect");
+      if (sel && sel.value !== LiveSim.engineSimMode) sel.value = LiveSim.engineSimMode;
+      liveSimRenderModeHint();
+    }
     liveSimCheckIncidentTimer(msg.t);
     const seen = new Set();
     for (const v of msg.vehicles) {
@@ -173,6 +189,21 @@ function liveSimConnect() {
     if (nowSec !== LiveSim._lastIncidentTickSec) {
       LiveSim._lastIncidentTickSec = nowSec;
       liveSimRefreshIncidentLiveFields();
+      let liveCount = 0;
+      for (const v of LiveSim.vehicles.values()) if (v.live) liveCount++;
+      const countEl = $("#liveSimLiveVehicleCount");
+      if (countEl) {
+        // In realistic mode the count is shown even at zero: "no device is
+        // reporting yet" is exactly the thing an operator needs to see there,
+        // whereas in simulation mode it is just a footnote worth hiding.
+        const showZero = LiveSim.engineSimMode === "realistic";
+        const hide = liveCount === 0 && !showZero;
+        countEl.hidden = hide;
+        countEl.style.display = hide ? "none" : "";
+        countEl.textContent = liveCount === 0
+          ? "📡 No device is reporting GPS yet - waiting for a driver to start tracking"
+          : `📡 ${liveCount} real vehicle${liveCount === 1 ? "" : "s"} tracked live`;
+      }
       liveSimCheckIncidentArrivals();
     }
 
@@ -303,6 +334,7 @@ function liveSimApplyPendingStartSync() {
   liveSimSendCommand({ cmd: "setSignalMode", value: sync.signalMode });
   liveSimSendCommand({ cmd: "setAdvancedLaneAI", value: sync.advancedLaneAI });
   liveSimSendCommand({ cmd: "setSpeed", value: sync.speed });
+  if (sync.simMode) liveSimSendCommand({ cmd: "setSimMode", value: sync.simMode });
 }
 
 /* ---------------- Click-to-select a vehicle + show its planned path ---------------- */
@@ -1022,10 +1054,14 @@ async function liveSimStart() {
     const speed = parseFloat($("#liveSimSpeedInput").value) || 1;
     const advancedLaneAI = !!$("#liveSimAdvancedAiChk").checked;
     const signalMode = $("#liveSimSignalModeSelect").value;
+    // Which vehicles the engine puts on the road - see sim_engine.cpp's
+    // SimMode. Sent as a CLI arg for a fresh launch AND re-pushed over the
+    // socket below, for the same already-running-engine reason signalMode is.
+    const simMode = $("#liveSimModeSelect").value;
     const res = await fetch("/api/sim/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ concurrency, speed, simSeconds: 3600, advancedLaneAI, signalMode }),
+      body: JSON.stringify({ concurrency, speed, simSeconds: 3600, advancedLaneAI, signalMode, mode: simMode }),
     });
     const data = await res.json();
     if (!data.ok) { toast(data.error || "Could not start the simulation engine"); return; }
@@ -1038,7 +1074,7 @@ async function liveSimStart() {
     // click actually asked for once connected, covering that case (harmless
     // no-op against a genuinely freshly-launched engine, which already got
     // the same values via its CLI args).
-    LiveSim.pendingStartSync = { signalMode, advancedLaneAI, speed };
+    LiveSim.pendingStartSync = { signalMode, advancedLaneAI, speed, simMode };
     liveSimConnect();
     if (LiveSim.connected) liveSimApplyPendingStartSync(); // ws was already open (see that function's own comment)
   } catch (e) {
@@ -1154,6 +1190,7 @@ function showSimStatsModal(stats) {
 
 function initLiveSimUI() {
   $("#liveSimStartBtn").addEventListener("click", liveSimStart);
+  liveSimRenderModeHint(); // seed the dropdown's explanation line before the first engine frame arrives
   $("#liveSimStopBtn").addEventListener("click", liveSimStop);
   // Once the engine is running, this box no longer just sets the speed it
   // starts at (liveSimStart already reads it for that) - changing it also
@@ -1174,6 +1211,14 @@ function initLiveSimUI() {
   // each mode actually does.
   $("#liveSimSignalModeSelect").addEventListener("change", () => {
     liveSimSendCommand({ cmd: "setSignalMode", value: $("#liveSimSignalModeSelect").value });
+  });
+  // Only reaches a running engine (liveSimStart already reads this select's
+  // value for a fresh launch) - see sim_engine.cpp's SimMode. Switching to
+  // "realistic" takes every pre-positioned manifest vehicle off the map
+  // immediately; switching back respawns them from the start of the manifest.
+  $("#liveSimModeSelect").addEventListener("change", () => {
+    liveSimSendCommand({ cmd: "setSimMode", value: $("#liveSimModeSelect").value });
+    liveSimRenderModeHint();
   });
   // Collapses/expands the whole Emergency Control section (create-incident
   // control + the incident card list) - purely a local UI preference, no
@@ -1225,8 +1270,29 @@ function updateLiveSimReadout() {
   const m = LiveSim.lastMeta;
   const mins = Math.floor(m.t / 60), secs = Math.floor(m.t % 60);
   const modeLabel = { default: "default", density: "auto", emergency: "emergency-only" }[m.mode] || m.mode;
+  // Realistic mode has no manifest trips to complete, so the "x/y trips
+  // completed" half of this line is meaningless there - it is replaced with
+  // the count of real devices reporting, which is the only number that moves.
+  if (LiveSim.engineSimMode === "realistic") {
+    readoutEl.textContent = `t=${mins}:${String(secs).padStart(2, "0")} · realistic · `
+      + `${m.liveVehicles || 0} GPS device${(m.liveVehicles || 0) === 1 ? "" : "s"} reporting · signals: ${modeLabel}`;
+    return;
+  }
   readoutEl.textContent = `t=${mins}:${String(secs).padStart(2, "0")} · ${LiveSim.vehicles.size} active · `
     + `${m.completed}/${m.total} trips completed · signals: ${modeLabel}`;
+}
+
+// One-line explanation under the vehicle-source dropdown. Reads from the
+// dropdown rather than LiveSim.engineSimMode so it responds the instant the
+// operator changes it, before the engine's next state frame confirms it.
+function liveSimRenderModeHint() {
+  const el = $("#liveSimModeHint");
+  if (!el) return;
+  const sel = $("#liveSimModeSelect");
+  const mode = sel ? sel.value : "simulation";
+  el.textContent = mode === "realistic"
+    ? "No manifest vehicle is spawned, and any already on the map is removed. Only devices reporting GPS through fear_backend appear."
+    : "The engine drives the pre-positioned vehicles from the vehicles.json manifest. Real GPS vehicles still appear alongside them.";
 }
 
 /* ---------------- Rendering ---------------- */
@@ -1285,6 +1351,7 @@ LiveSim.draw = function () {
   const emergencyVehicles = []; // ambulance/firetruck/police - EMERGENCY_VEHICLE_TYPES
   const waiting = []; // Auto/Density mode's green queue-chain dot - see v.aw (seconds this vehicle has been queued)
   const stuck = []; // stopped >5s - see v.stk
+  const liveVehicles = []; // real, GPS-tracked (fear_system_deployable) - see v.live/v.vid
   for (const v of LiveSim.vehicles.values()) {
     const ty = LIVE_SIM_STYLE[v.ty] ? v.ty : "car";
     let arr = groups.get(ty);
@@ -1293,6 +1360,7 @@ LiveSim.draw = function () {
     if (EMERGENCY_VEHICLE_TYPES.has(ty)) emergencyVehicles.push(v);
     if (v.aw) waiting.push(v);
     if (v.stk) stuck.push(v);
+    if (v.live) liveVehicles.push(v);
   }
 
   const halfW = cssW() + 40, halfH = cssH() + 40;
@@ -1433,6 +1501,60 @@ LiveSim.draw = function () {
   // white/red-blue, waiting green, selection gold) so a genuinely stuck
   // vehicle (not just briefly queued at a light) stands out at a glance.
   liveSimDrawFloatingDots(stuck, "#ff00ff");
+
+  // Real, GPS-tracked vehicles (fear_system_deployable, via fear_backend ->
+  // sim_engine.cpp's liveVehicleUpdate - see backend/sim/sim_engine.cpp's
+  // Vehicle::externallyTracked) get a gold dashed outline around their
+  // already-drawn body (the main per-type fill loop above already rendered
+  // them like any other vehicle, since they flow through the exact same
+  // grouping/gating/state broadcast) plus a small floating "LIVE" tag, so an
+  // operator can tell a real tracked vehicle apart from the synthetic fleet
+  // at a glance.
+  if (liveVehicles.length) {
+    ctx.save();
+    ctx.strokeStyle = "#ffb703";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    for (const v of liveVehicles) {
+      const wp = liveSimVehicleWorldPos(v);
+      const sp = worldToScreen(wp.x, wp.y);
+      if (sp.x < -40 || sp.x > halfW || sp.y < -40 || sp.y > halfH) continue;
+      const tip = worldToScreen(wp.x + Math.cos(v.h), wp.y + Math.sin(v.h));
+      const dx = tip.x - sp.x, dy = tip.y - sp.y;
+      const dlen = Math.max(1e-6, Math.hypot(dx, dy));
+      const ux = dx / dlen, uy = dy / dlen;
+      const px = -uy, py = ux;
+      const style = LIVE_SIM_STYLE[v.ty] || LIVE_SIM_STYLE.car;
+      const hl = ((v.l || style.length) / 2) * State.view.scale + 3;
+      const hw = ((v.w || style.width) / 2) * State.view.scale + 3;
+      ctx.beginPath();
+      ctx.moveTo(sp.x + ux * hl + px * hw, sp.y + uy * hl + py * hw);
+      ctx.lineTo(sp.x + ux * hl - px * hw, sp.y + uy * hl - py * hw);
+      ctx.lineTo(sp.x - ux * hl - px * hw, sp.y - uy * hl - py * hw);
+      ctx.lineTo(sp.x - ux * hl + px * hw, sp.y - uy * hl + py * hw);
+      ctx.closePath();
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.font = "bold 10px var(--font, sans-serif)";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    for (const v of liveVehicles) {
+      const wp = liveSimVehicleWorldPos(v);
+      const sp = worldToScreen(wp.x, wp.y);
+      if (sp.x < -40 || sp.x > halfW || sp.y < -40 || sp.y > halfH) continue;
+      const style = LIVE_SIM_STYLE[v.ty] || LIVE_SIM_STYLE.car;
+      const halfLenPx = ((v.l || style.length) / 2) * State.view.scale;
+      const labelY = sp.y - halfLenPx - 8;
+      const label = "LIVE" + (v.vid ? " " + v.vid : "");
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.strokeText(label, sp.x, labelY);
+      ctx.fillStyle = "#b8860b";
+      ctx.fillText(label, sp.x, labelY);
+    }
+    ctx.restore();
+  }
 
   liveSimDrawIncidents();
   liveSimDrawHospitalDestinations();

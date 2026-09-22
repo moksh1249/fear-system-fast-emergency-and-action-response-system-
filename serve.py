@@ -181,6 +181,13 @@ def start_sim_engine(opts):
         argv += ["--advanced-lane-ai"]
     if opts.get("signalMode") in ("default", "emergency", "density"):
         argv += ["--signal-mode", opts["signalMode"]]
+    # Which vehicles the engine puts on the road - see sim_engine.cpp's SimMode.
+    # "simulation" drives the vehicles.json manifest; "realistic" spawns nothing
+    # and shows only the real, GPS-tracked vehicles fear_backend forwards in.
+    # Also switchable on a running engine via the setSimMode websocket command,
+    # so this only decides what it STARTS in.
+    if opts.get("mode") in ("simulation", "realistic"):
+        argv += ["--mode", opts["mode"]]
 
     with _sim_lock:
         log_f = open(SIM_LOG_PATH, "w", encoding="utf-8")

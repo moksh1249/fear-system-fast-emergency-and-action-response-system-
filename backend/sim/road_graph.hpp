@@ -277,7 +277,34 @@ struct RoadGraph {
     // to live congestion instead of the same static weights the one-time CH
     // query already used.
     std::vector<float> chainEdgeLiveSpeed;
+
+    // map_data.json's own meta.origin - the equirectangular projection anchor
+    // osm_to_json.py's project() used to turn every node's real lat/lon into
+    // this graph's local x/y metres (see that function's own docstring).
+    // Populated below in buildRoadGraph; used by sim_engine.cpp's
+    // handleCommand to turn a live-tracked vehicle's real GPS fix (see
+    // liveLatLonToXY below) into a point on this same x/y plane, so it can be
+    // snapped onto the road graph exactly like any other position here.
+    double originLat = 0.0, originLon = 0.0;
 };
+
+// Mirrors osm_to_json.py's project(lat, lon, lat0, lon0) exactly (same
+// equirectangular approximation - flat, metres, centred on the map's own
+// origin - same EARTH_RADIUS_M), so a live-tracked vehicle's real GPS fix
+// projects onto EXACTLY the same x/y plane every node in this graph already
+// lives on. See RoadGraph::originLat/originLon above for where lat0/lon0 come
+// from.
+static constexpr double EARTH_RADIUS_M = 6378137.0;
+// Locally-scoped degrees->radians constant (deliberately not named PI/M_PI -
+// vehicles.hpp, included alongside this file in sim_engine.cpp, defines its
+// own file-scope PI, and this header must stay includable standalone without
+// colliding with it).
+static constexpr double RG_DEG2RAD = 3.14159265358979323846 / 180.0;
+static void latLonToXY(const RoadGraph& rg, double lat, double lon, double& outX, double& outY) {
+    outX = (lon - rg.originLon) * RG_DEG2RAD * std::cos(rg.originLat * RG_DEG2RAD) * EARTH_RADIUS_M;
+    outY = (lat - rg.originLat) * RG_DEG2RAD * EARTH_RADIUS_M;
+}
+
 
 // At most 2 SIMULATED lanes per direction regardless of ce.lanesPerDirection
 // (see vehicles.hpp's desiredLaneForStep) - a flat cap so a road tagged with
@@ -293,6 +320,13 @@ static RoadGraph buildRoadGraph(const JsonValue& root) {
     const JsonValue* waysJson = root.find("ways");
     if (!nodesJson || nodesJson->type != JsonValue::Type::Object) throw std::runtime_error("map_data.json missing 'nodes' object");
     if (!waysJson || waysJson->type != JsonValue::Type::Array) throw std::runtime_error("map_data.json missing 'ways' array");
+
+    if (const JsonValue* metaVal = root.find("meta")) {
+        if (const JsonValue* originVal = metaVal->find("origin")) {
+            rg.originLat = originVal->num("lat").value_or(0.0);
+            rg.originLon = originVal->num("lon").value_or(0.0);
+        }
+    }
 
     std::unordered_map<std::string, const JsonValue*> nodeById;
     nodeById.reserve(nodesJson->objVal.size() * 2);

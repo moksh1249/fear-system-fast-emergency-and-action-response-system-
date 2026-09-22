@@ -425,41 +425,6 @@ static void appendJsonString(std::string& out, const std::string& s) {
     out += '"';
 }
 
-// How the engine sources the vehicles it simulates. Orthogonal to SignalMode
-// (which decides how traffic LIGHTS behave) - this decides who is on the road
-// at all:
-//
-//   Simulation - the original behaviour. The engine spawns the synthetic
-//     trips listed in the vehicles.json manifest ("already positioned
-//     vehicles": each trip has a fixed start/end node decided ahead of time by
-//     generate_vehicles.py) and drives them with the full IDM/lane-change/
-//     gating model. Real GPS-tracked vehicles, if any device happens to be
-//     reporting, are still accepted and rendered alongside them.
-//
-//   Realistic - the map reflects only the physical world. NO synthetic trip is
-//     ever spawned, and any synthetic vehicle still on the road at the moment
-//     the mode is entered is removed immediately (not left to finish its trip)
-//     so the operator never sees a manifest vehicle in this mode. The only
-//     vehicles that exist are the externally tracked ones fed in by
-//     fear_backend's liveVehicleUpdate - one per real device reporting GPS.
-//     The engine deliberately keeps running with zero vehicles here, waiting
-//     for a device to connect, instead of treating an empty map as
-//     end-of-run (see the main loop's allDone check).
-//
-// Set at launch with --mode, and switchable live with
-// {"cmd":"setSimMode","value":"simulation"|"realistic"}. Switching back to
-// Simulation rewinds the spawn cursor so the manifest repopulates the map
-// rather than resuming a half-consumed trip list.
-enum class SimMode { Simulation, Realistic };
-
-static SimMode simModeFromString(const std::string& s) {
-    if (s == "realistic" || s == "real" || s == "live") return SimMode::Realistic;
-    return SimMode::Simulation;
-}
-static const char* simModeToString(SimMode m) {
-    return m == SimMode::Realistic ? "realistic" : "simulation";
-}
-
 struct TypeStats { long long count = 0; double sumTripSec = 0; };
 struct EmergencyStats { long long count = 0; double sumResponseSec = 0, sumTransportSec = 0; };
 
@@ -485,8 +450,7 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
                                    const RedlightController& redlights, const AutoWeightBoard& autoWeights,
                                    const std::unordered_map<int, std::unordered_map<std::string, bool>>& densityGranted,
                                    const std::unordered_map<std::string, TypeStats>& completedByType,
-                                   const EmergencyStats& emergencyStats, long long totalStuckVehicles, SimMode simMode,
-                                   bool isFinal = false) {
+                                   const EmergencyStats& emergencyStats, long long totalStuckVehicles, bool isFinal = false) {
     std::string out;
     out.reserve(vehicles.size() * 72 + 128);
     char buf[64];
@@ -504,18 +468,6 @@ static std::string buildStateJson(double simClock, const std::vector<Vehicle>& v
     out += ",\"completed\":"; out += std::to_string(totalCompleted);
     out += ",\"total\":"; out += std::to_string(totalTrips);
     out += ",\"mode\":\""; out += signalModeToString(signalMode); out += "\"";
-    // Which vehicle source the engine is running on (see SimMode) plus how
-    // many real, GPS-tracked devices are currently on the map. Both are sent
-    // every tick rather than only on change: sim-client.js can attach to an
-    // already-running engine at any time (see its reconnect path), so the
-    // stream itself has to be self-describing - there is no "current mode"
-    // handshake to miss.
-    out += ",\"simMode\":\""; out += simModeToString(simMode); out += "\"";
-    {
-        long long liveNow = 0;
-        for (const Vehicle& lv : vehicles) if (lv.active && lv.externallyTracked) liveNow++;
-        out += ",\"liveVehicles\":"; out += std::to_string(liveNow);
-    }
     // Under EmergencyOnly/Density mode a signalized junction's lamp colors
     // are decided live, server-side from RedlightController (see the main
     // loop's step 3 and redlights.hpp's SignalMode comment), not the
@@ -1012,7 +964,7 @@ static void handleCommand(const std::string& text, WsClient& fromClient, double&
                            const RoadGraph& rg, const ChGraph& chg, const std::vector<TripSpec>& trips,
                            const std::unordered_map<std::string, std::string>& depotNodeByAmenityId,
                            double simClock, size_t liveVehicleSlotBase, int maxLiveVehicles,
-                           std::unordered_map<std::string, int>& liveSlotByExternalId, SimMode& simMode) {
+                           std::unordered_map<std::string, int>& liveSlotByExternalId, bool& liveOnlyMode) {
     try {
         JsonValue msg = JsonParser(text).parse();
         auto cmd = msg.str("cmd");
@@ -1251,23 +1203,10 @@ static void handleCommand(const std::string& text, WsClient& fromClient, double&
             vehicles[(size_t)slotIt->second] = Vehicle{};
             liveSlotByExternalId.erase(slotIt);
             std::cerr << "[sim] live vehicle removed: " << *vehicleId << "\n";
-        } else if (*cmd == "setSimMode") {
-            // Switch the engine's vehicle source live (see SimMode). Only the
-            // flag is written here - the actual consequences of entering
-            // Realistic (purging every synthetic vehicle already on the road)
-            // or returning to Simulation (rewinding the spawn cursor) are
-            // applied by the main loop, which is the only place that owns
-            // activeCount / spawnCursor / spawnRetryQueue; see its step 0.6.
-            auto val = msg.str("value");
-            if (val) simMode = simModeFromString(*val);
-            std::cerr << "[sim] vehicle-source mode set to " << simModeToString(simMode) << "\n";
         } else if (*cmd == "setLiveOnly") {
-            // Back-compat alias for the boolean flag SimMode replaced: true
-            // meant "show only real GPS vehicles", which is exactly Realistic.
             const JsonValue* val = msg.find("value");
-            if (val && val->type == JsonValue::Type::Bool)
-                simMode = val->boolVal ? SimMode::Realistic : SimMode::Simulation;
-            std::cerr << "[sim] vehicle-source mode set to " << simModeToString(simMode) << " (legacy setLiveOnly)\n";
+            if (val && val->type == JsonValue::Type::Bool) liveOnlyMode = val->boolVal;
+            std::cerr << "[sim] live-only mode (suppress new synthetic spawns) " << (liveOnlyMode ? "ON" : "OFF") << "\n";
         } else {
             std::cerr << "[sim] control message noted (no effect until a later phase): " << text << "\n";
         }
@@ -1281,7 +1220,7 @@ int main(int argc, char** argv) {
         std::cerr << "usage: sim_engine <map_data.json> <map_data.ch.bin> <vehicles.json> "
                      "[--sim-seconds N] [--concurrency N] [--ramp-seconds N] [--stats-interval N] "
                      "[--track-vehicle ID] [--port N] [--speed N] [--headless] [--advanced-lane-ai] "
-                     "[--signal-mode default|emergency|density] [--mode simulation|realistic]\n";
+                     "[--signal-mode default|emergency|density]\n";
         return 2;
     }
     std::string mapPath = argv[1], chPath = argv[2], vehiclesPath = argv[3];
@@ -1297,9 +1236,6 @@ int main(int argc, char** argv) {
     // Phase 4 - see redlights.hpp's SignalMode comment. Toggleable live via
     // {"cmd":"setSignalMode","value":"default"|"emergency"|"density"}.
     SignalMode signalMode = SignalMode::Default;
-    // Which vehicles the engine puts on the road - see SimMode. Also
-    // switchable live via {"cmd":"setSimMode","value":"simulation"|"realistic"}.
-    SimMode simMode = SimMode::Simulation;
     for (int i = 4; i < argc; ++i) {
         std::string a = argv[i];
         auto nextVal = [&](const char* name) -> std::string {
@@ -1316,7 +1252,6 @@ int main(int argc, char** argv) {
         else if (a == "--headless") headless = true;
         else if (a == "--advanced-lane-ai") advancedLaneAI = true;
         else if (a == "--signal-mode") signalMode = signalModeFromString(nextVal(a.c_str()));
-        else if (a == "--mode") simMode = simModeFromString(nextVal(a.c_str()));
         else { std::cerr << "unknown argument: " << a << "\n"; return 2; }
     }
 
@@ -1369,9 +1304,7 @@ int main(int argc, char** argv) {
         const size_t liveVehicleSlotBase = trips.size();
         const int MAX_LIVE_VEHICLES = 64;
         std::unordered_map<std::string, int> liveSlotByExternalId;
-        // Mirrors simMode as of the previous tick, so the main loop can act
-        // once on a mode CHANGE (see step 0.6) rather than every tick.
-        SimMode lastSimMode = simMode;
+        bool liveOnlyMode = false; // "setLiveOnly" - pauses NEW synthetic spawns so the map reflects only real tracked vehicles
 
         std::vector<Vehicle> vehicles(trips.size() + MAX_LIVE_VEHICLES);
         const double dt = 1.0 / 20.0;
@@ -1428,7 +1361,7 @@ int main(int argc, char** argv) {
         bool allDone = false;
         while (simClock < simSeconds && !stopRequested && !allDone) {
             auto tickWallStart = Clock::now();
-            if (!headless) server.pump([&](const std::string& text, WsClient& fc) { handleCommand(text, fc, speedMultiplier, stopRequested, advancedLaneAI, signalMode, vehicles, rg, chg, trips, depotNodeByAmenityId, simClock, liveVehicleSlotBase, MAX_LIVE_VEHICLES, liveSlotByExternalId, simMode); });
+            if (!headless) server.pump([&](const std::string& text, WsClient& fc) { handleCommand(text, fc, speedMultiplier, stopRequested, advancedLaneAI, signalMode, vehicles, rg, chg, trips, depotNodeByAmenityId, simClock, liveVehicleSlotBase, MAX_LIVE_VEHICLES, liveSlotByExternalId, liveOnlyMode); });
 
             // How many dt=1/20s physics ticks to run before the next
             // broadcast/sleep (step 7) - see that step's own comment for why
@@ -1465,42 +1398,6 @@ int main(int argc, char** argv) {
                         lv = Vehicle{};
                     }
                 }
-            }
-
-            // 0.6. Vehicle-source mode transition (see SimMode). Runs here,
-            // in the main loop, rather than in handleCommand, because this is
-            // the only scope that owns activeCount / spawnCursor /
-            // spawnRetryQueue - the three pieces of state a mode switch has to
-            // correct. Fires only on an actual change, not every tick.
-            if (simMode != lastSimMode) {
-                if (simMode == SimMode::Realistic) {
-                    // Realistic means "the map shows the physical world only",
-                    // so every synthetic manifest vehicle comes off the road
-                    // right now. Only the ordinary trip range [0, trips.size())
-                    // is swept: the reserved live-vehicle tail beyond it holds
-                    // the real GPS-tracked vehicles, which are exactly what this
-                    // mode exists to show.
-                    long long purged = 0;
-                    for (size_t vi = 0; vi < liveVehicleSlotBase; ++vi) {
-                        Vehicle& sv = vehicles[vi];
-                        if (!sv.active || sv.externallyTracked) continue;
-                        sv = Vehicle{};
-                        purged++;
-                    }
-                    activeCount = std::max<long long>(0, activeCount - purged);
-                    spawnRetryQueue.clear();
-                    std::cerr << "[sim] realistic mode: removed " << purged
-                              << " synthetic vehicle(s); map now shows GPS-tracked vehicles only" << "\n";
-                } else {
-                    // Back to Simulation: rewind the spawn cursor so the whole
-                    // manifest repopulates the map, instead of resuming from a
-                    // part-consumed trip list that would leave the road nearly
-                    // empty for the rest of the run.
-                    spawnCursor = 0;
-                    spawnRetryQueue.clear();
-                    std::cerr << "[sim] simulation mode: respawning from the vehicle manifest" << "\n";
-                }
-                lastSimMode = simMode;
             }
 
             // 1. Spawn, paced so a large target concurrency ramps up over
@@ -1585,13 +1482,13 @@ int main(int argc, char** argv) {
                 return true;
             };
 
-            // Realistic mode (see SimMode) issues no synthetic spawns at
-            // all - neither freshly-cursored trips nor ones already waiting in
-            // the retry queue - so the map shows only real, GPS-tracked
-            // vehicles. Unlike the setLiveOnly flag this replaced, vehicles
-            // already on the road are not left to finish their trips either:
-            // step 0.6 above removes them the moment the mode is entered.
-            if (simMode != SimMode::Realistic) {
+            // setLiveOnly (see handleCommand) skips issuing any further
+            // synthetic spawns - both freshly-cursored trips and ones
+            // already waiting in the retry queue - so the map settles down
+            // to showing only real, GPS-tracked vehicles. Already-active
+            // synthetic vehicles are left to finish their trips normally
+            // rather than being yanked off the map.
+            if (!liveOnlyMode) {
                 size_t retryRounds = spawnRetryQueue.size();
                 for (size_t i = 0; i < retryRounds && activeCount < concurrency && spawnedThisTick < spawnBudgetPerTick; ++i) {
                     size_t idx = spawnRetryQueue.front();
@@ -2440,12 +2337,7 @@ int main(int argc, char** argv) {
             }
 
             simClock += dt;
-            // Realistic mode is exempt: with no synthetic trips ever spawned
-            // the map is legitimately empty until a real device reports in,
-            // and the engine has to stay up waiting for one rather than
-            // treating that as end-of-run.
-            if (simMode != SimMode::Realistic
-                && activeCount == 0 && spawnCursor >= trips.size() && spawnRetryQueue.empty()) { allDone = true; break; }
+            if (activeCount == 0 && spawnCursor >= trips.size() && spawnRetryQueue.empty()) { allDone = true; break; }
             } // end of per-tick batch (rep loop)
 
             // 7. Broadcast the latest snapshot and, unless running headless
@@ -2469,7 +2361,7 @@ int main(int argc, char** argv) {
             // that anyway).
             if (!headless) {
                 server.broadcast(buildStateJson(simClock, vehicles, rg, totalSpawned, totalCompleted, trips.size(), signalMode,
-                                                 redlights, autoWeights, densityGranted, completedByType, emergencyStats, totalStuckVehicles, simMode));
+                                                 redlights, autoWeights, densityGranted, completedByType, emergencyStats, totalStuckVehicles));
                 double elapsed = std::chrono::duration<double>(Clock::now() - tickWallStart).count();
                 if (elapsed < dt) std::this_thread::sleep_for(std::chrono::duration<double>(dt - elapsed));
             }
@@ -2481,7 +2373,7 @@ int main(int argc, char** argv) {
         // instead of only when someone happened to click Stop.
         if (!headless) {
             server.broadcast(buildStateJson(simClock, vehicles, rg, totalSpawned, totalCompleted, trips.size(), signalMode,
-                                             redlights, autoWeights, densityGranted, completedByType, emergencyStats, totalStuckVehicles, simMode, /*isFinal=*/true));
+                                             redlights, autoWeights, densityGranted, completedByType, emergencyStats, totalStuckVehicles, /*isFinal=*/true));
         }
         if (!headless) std::cerr << "[sim] stopping (t=" << simClock << "s, stopRequested=" << stopRequested << ")\n";
 

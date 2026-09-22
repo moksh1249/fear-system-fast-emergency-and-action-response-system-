@@ -96,6 +96,16 @@
           </select>
         </div>
 
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimModeSelect">Vehicle source</label>
+          <select id="liveSimModeSelect" class="sim-number-input" title="Simulation: the engine drives the pre-positioned vehicles from the vehicles.json manifest. Realistic: no manifest vehicle is spawned and any already on the road is removed, so the map shows only real vehicles reporting GPS from fear_system_deployable via fear_backend.">
+            <option value="simulation">Simulation (pre-positioned vehicles)</option>
+            <option value="realistic">Realistic (live GPS devices only)</option>
+          </select>
+        </div>
+        <div id="liveSimModeHint" class="ext-ctrl-hint"></div>
+        <div id="liveSimLiveVehicleCount" class="ext-ctrl-hint" style="display:none;"></div>
+
         <div class="checkrow" style="margin: 8px 0;">
           <input type="checkbox" id="liveSimIncidentsChk" checked>
           <label for="liveSimIncidentsChk" title="Periodically spawns a random emergency (fire/medical/accident/crime) as a marker on the map and a row in the Active Incidents list below. Click one to review it and pick how many of each vehicle type to send - the engine auto-dispatches the nearest available (not already responding) vehicles of each requested type.">🚨 Random emergency incidents</label>

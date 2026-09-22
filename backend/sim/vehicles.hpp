@@ -214,6 +214,108 @@ static std::string nearestRoutableNodeId(const RoadGraph& rg, double x, double y
     return best >= 0 ? rg.nodeId[best] : std::string();
 }
 
+// ---------------------------------------------------------------------------
+// Live-vehicle GPS -> road-graph snap (see sim_engine.cpp's handleCommand
+// liveVehicleUpdate). Engine-internal vehicle position is a plain centerline
+// lerp between an edge's from/to node (see vehicleWorldPosition above - no
+// carriageway/lane lateral offset, that's a rendering-only concern), so
+// snapping a projected GPS point against those same raw node coordinates
+// keeps a live vehicle self-consistent with how its position is read back
+// out every tick. Always resolves to lane 0 regardless of which lane the fix
+// nominally falls in - ordinary consumer GPS accuracy (commonly 3-5m+)
+// cannot reliably distinguish which of a ~3m-wide lane a fix is actually in,
+// so pretending otherwise would be false precision, not a real improvement.
+// A plain O(edges) scan, same reasoning as nearestRoutableNodeId above: this
+// only runs once per incoming GPS fix (a few times a minute per vehicle at
+// most), never a per-tick hot path.
+// ---------------------------------------------------------------------------
+
+struct EdgeSnap {
+    bool found = false;
+    bool isJunction = false;
+    int edgeIndex = -1;
+    double distAlongEdge = 0.0;
+};
+
+static EdgeSnap nearestEdgeSnap(const RoadGraph& rg, double x, double y, const double* headingDeg = nullptr) {
+    EdgeSnap best;
+    double bestScore = 1e30;
+    auto consider = [&](bool isJunction, int idx, int fromNode, int toNode, double lengthM) {
+        double fx = rg.nodeX[fromNode], fy = rg.nodeY[fromNode];
+        double tx = rg.nodeX[toNode], ty = rg.nodeY[toNode];
+        double ex = tx - fx, ey = ty - fy;
+        double segLen2 = ex * ex + ey * ey;
+        double t = segLen2 > 1e-9 ? ((x - fx) * ex + (y - fy) * ey) / segLen2 : 0.0;
+        t = std::max(0.0, std::min(1.0, t));
+        double px = fx + ex * t, py = fy + ey * t;
+        double score = dist2d(x, y, px, py);
+        // A reported course, when present, breaks the tie between a divided
+        // road's two directional edges (they share the same centerline
+        // geometry, so plain nearest-point distance alone can't tell them
+        // apart) - an edge pointing roughly opposite the reported heading is
+        // heavily penalized rather than ruled out entirely, so this still
+        // degrades gracefully to plain-nearest when every candidate is a
+        // similarly poor heading match (e.g. a vehicle stopped at a sharp turn).
+        if (headingDeg && segLen2 > 1e-9) {
+            double edgeBearing = std::atan2(ex, ey) * 180.0 / PI; // clockwise from north, matching GPS course convention (x=east, y=north)
+            if (edgeBearing < 0) edgeBearing += 360.0;
+            double diff = std::fabs(*headingDeg - edgeBearing);
+            if (diff > 180.0) diff = 360.0 - diff;
+            if (diff > 100.0) score += 1e6;
+        }
+        if (score < bestScore) {
+            bestScore = score;
+            best.found = true;
+            best.isJunction = isJunction;
+            best.edgeIndex = idx;
+            best.distAlongEdge = std::max(0.0, std::min(lengthM, t * lengthM));
+        }
+    };
+    for (size_t i = 0; i < rg.chainEdges.size(); ++i) {
+        const ChainEdge& ce = rg.chainEdges[i];
+        consider(false, (int)i, ce.from, ce.to, ce.lengthM);
+    }
+    for (size_t i = 0; i < rg.junctionEdges.size(); ++i) {
+        const JunctionEdge& je = rg.junctionEdges[i];
+        consider(true, (int)i, je.from, je.to, je.lengthM);
+    }
+    return best;
+}
+
+// Builds a live vehicle's synthetic "route" from a fresh GPS snap: always the
+// snapped edge itself (routeIdx 0), PLUS, only when that edge's end node
+// leads directly into a junction edge, one more lookahead step for it (never
+// traversed - see Vehicle::externallyTracked's own comment, step 5 in
+// sim_engine.cpp's main loop skips integration/edge-transition for these
+// vehicles entirely). That second step is what lets a live vehicle
+// participate in the SAME routeIdx+1-lookahead code every ordinary vehicle's
+// junction gating/Density-mode weight already uses (see redlights.hpp/
+// sim_engine.cpp's main loop step 3) - without it, a live vehicle parked at a
+// red light would be invisible to that logic. When the node fans out into
+// several junction-edge movements, "through" is preferred (this map's modal
+// movement, and lane 0's own semantics - see desiredLaneForStep) since real
+// GPS+heading alone can't know a driver's actual turn intent; this is a
+// documented simplification, not a solvable ambiguity.
+static std::vector<RouteStep> liveVehicleRouteFromSnap(const RoadGraph& rg, const EdgeSnap& snap) {
+    std::vector<RouteStep> route;
+    if (!snap.found) return route;
+    double len = snap.isJunction ? rg.junctionEdges[snap.edgeIndex].lengthM : rg.chainEdges[snap.edgeIndex].lengthM;
+    route.push_back({snap.isJunction, snap.edgeIndex, len});
+    if (snap.isJunction) return route; // already mid-junction - no further lookahead needed
+    int toNode = rg.chainEdges[snap.edgeIndex].to;
+    int fallbackIdx = -1;
+    for (const OutEdgeRef& oe : rg.outAdj[toNode]) {
+        if (!oe.isJunction) continue;
+        if (fallbackIdx < 0) fallbackIdx = oe.index;
+        if (rg.junctionEdges[oe.index].movement == "through") {
+            route.push_back({true, oe.index, rg.junctionEdges[oe.index].lengthM});
+            return route;
+        }
+    }
+    if (fallbackIdx >= 0) route.push_back({true, fallbackIdx, rg.junctionEdges[fallbackIdx].lengthM});
+    return route;
+}
+
 // Which of an edge's (at most 2, see simLaneCount) simulated lanes a vehicle
 // should use while travelling it, chosen by peeking at the movement of the
 // junction it leads to: lane 0 (the outer/curb lane in this left-hand-
@@ -264,7 +366,7 @@ static const TypeProfile& profileFor(const std::string& type) {
         {"motorcycle", {4.0, 3.5, 0.7, 1.0}},
         {"bus", {1.4, 2.0, 1.5, 2.5}},
         {"truck", {1.2, 2.0, 1.5, 2.5}},
-        {"ambulance", {3.2, 3.5, 0.9, 1.5}},
+        {"ambulance", {3.2, 3.5, 0.9, 1.6}},
         // Firetruck: heavy and not especially nimble (lower aMax/bComfort
         // than a car), but still an urgent responder - slightly tighter
         // headway than an ordinary truck, wider minGap than a car/ambulance
@@ -398,6 +500,26 @@ struct Vehicle {
     // that were EVER stuck, not repeated stop/go episodes at the same light.
     double stoppedDurationSec = 0.0;
     bool stuckCounted = false;
+
+    // Live-tracked ("real") vehicle support - see sim_engine.cpp's
+    // handleCommand liveVehicleUpdate/liveVehicleRemove and the main loop's
+    // per-step guards. externallyTracked vehicles occupy a reserved tail
+    // slice of the `vehicles` vector (never touched by the ordinary
+    // trip-spawn path - see main()'s MAX_LIVE_VEHICLES) and skip every
+    // physics/routing mutation step (IDM acceleration, lane-changing,
+    // integration/edge-transition, live rerouting) - their route/lane/
+    // distAlongEdge are instead set directly, each time a fresh GPS fix
+    // arrives, by snapping onto the road graph (see nearestEdgeSnap below).
+    // They still flow through grouping and junction gating/arbitration
+    // completely normally (those only ever READ route/lane/distAlongEdge/
+    // gate - see liveVehicleRouteFromSnap's own comment for why a 2-step
+    // route is built instead of a bare 1-step one), which is what lets
+    // Density mode's queue weight and ordinary signal gating genuinely react
+    // to a real vehicle's presence, not just a decorative map pin.
+    bool externallyTracked = false;
+    std::string externalVehicleId;
+    double lastReportedLat = 0.0, lastReportedLon = 0.0;
+    double lastGpsUpdateSimTime = -1e18;
 };
 
 // Junction-edge groups ignore lane (vehicles aren't lane-differentiated once

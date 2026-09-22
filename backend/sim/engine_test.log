@@ -1,0 +1,98 @@
+[sim] road graph: 15217 nodes, 19640 chain edges, 20476 junction edges, 2829 junctions (42 signalized), 59 ways skipped (non-routable/invalid)
+[sim] CH graph: 24917 nodes
+[sim] loaded 10000 trip specs (setup 127.532 ms)
+[sim] websocket server listening on ws://127.0.0.1:8767
+[sim t=0.0s] active=1 spawned=1/10000 completed=0 avgSpeed=0.4km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=10.0s] active=50 spawned=50/10000 completed=0 avgSpeed=40.4km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=20.0s] active=50 spawned=50/10000 completed=0 avgSpeed=41.0km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=30.0s] active=50 spawned=50/10000 completed=0 avgSpeed=37.0km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=40.0s] active=50 spawned=50/10000 completed=0 avgSpeed=38.2km/h avgTrip=0.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=50.0s] active=50 spawned=51/10000 completed=1 avgSpeed=37.3km/h avgTrip=47.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=60.0s] active=50 spawned=52/10000 completed=2 avgSpeed=35.3km/h avgTrip=51.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=70.0s] active=50 spawned=52/10000 completed=2 avgSpeed=37.5km/h avgTrip=51.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=80.0s] active=50 spawned=52/10000 completed=2 avgSpeed=39.5km/h avgTrip=51.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=90.0s] active=50 spawned=52/10000 completed=2 avgSpeed=37.2km/h avgTrip=51.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim] liveVehicleUpdate ignored: missing vehicleId/lat/lon
+[sim] liveVehicleUpdate ignored: missing vehicleId/lat/lon
+[sim] live-only mode (suppress new synthetic spawns) ON
+[sim] live-only mode (suppress new synthetic spawns) OFF
+[sim] live vehicle removed: FV-TEST01
+[sim t=100.0s] active=114 spawned=52/10000 completed=2 avgSpeed=22.3km/h avgTrip=51.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=110.0s] active=114 spawned=52/10000 completed=2 avgSpeed=21.2km/h avgTrip=51.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim] live vehicle timed out: FV-TEST02
+[sim] live vehicle timed out: FV-BULK03
+[sim] live vehicle timed out: FV-BULK04
+[sim] live vehicle timed out: FV-BULK05
+[sim] live vehicle timed out: FV-BULK06
+[sim] live vehicle timed out: FV-BULK07
+[sim] live vehicle timed out: FV-BULK08
+[sim] live vehicle timed out: FV-BULK09
+[sim] live vehicle timed out: FV-BULK10
+[sim] live vehicle timed out: FV-BULK11
+[sim] live vehicle timed out: FV-BULK12
+[sim] live vehicle timed out: FV-BULK13
+[sim] live vehicle timed out: FV-BULK14
+[sim] live vehicle timed out: FV-BULK15
+[sim] live vehicle timed out: FV-BULK16
+[sim] live vehicle timed out: FV-BULK17
+[sim] live vehicle timed out: FV-BULK18
+[sim] live vehicle timed out: FV-BULK19
+[sim] live vehicle timed out: FV-BULK20
+[sim] live vehicle timed out: FV-BULK21
+[sim] live vehicle timed out: FV-BULK22
+[sim] live vehicle timed out: FV-BULK23
+[sim] live vehicle timed out: FV-BULK24
+[sim] live vehicle timed out: FV-BULK25
+[sim] live vehicle timed out: FV-BULK26
+[sim] live vehicle timed out: FV-BULK27
+[sim] live vehicle timed out: FV-BULK28
+[sim] live vehicle timed out: FV-BULK29
+[sim] live vehicle timed out: FV-BULK30
+[sim] live vehicle timed out: FV-BULK31
+[sim] live vehicle timed out: FV-BULK32
+[sim] live vehicle timed out: FV-BULK33
+[sim] live vehicle timed out: FV-BULK34
+[sim] live vehicle timed out: FV-BULK35
+[sim] live vehicle timed out: FV-BULK36
+[sim] live vehicle timed out: FV-BULK37
+[sim] live vehicle timed out: FV-BULK38
+[sim] live vehicle timed out: FV-BULK39
+[sim] live vehicle timed out: FV-BULK40
+[sim] live vehicle timed out: FV-BULK41
+[sim] live vehicle timed out: FV-BULK42
+[sim] live vehicle timed out: FV-BULK43
+[sim] live vehicle timed out: FV-BULK44
+[sim] live vehicle timed out: FV-BULK45
+[sim] live vehicle timed out: FV-BULK46
+[sim] live vehicle timed out: FV-BULK47
+[sim] live vehicle timed out: FV-BULK48
+[sim] live vehicle timed out: FV-BULK49
+[sim] live vehicle timed out: FV-BULK50
+[sim] live vehicle timed out: FV-BULK51
+[sim] live vehicle timed out: FV-BULK52
+[sim] live vehicle timed out: FV-BULK53
+[sim] live vehicle timed out: FV-BULK54
+[sim] live vehicle timed out: FV-BULK55
+[sim] live vehicle timed out: FV-BULK56
+[sim] live vehicle timed out: FV-BULK57
+[sim] live vehicle timed out: FV-BULK58
+[sim] live vehicle timed out: FV-BULK59
+[sim] live vehicle timed out: FV-BULK60
+[sim] live vehicle timed out: FV-BULK61
+[sim] live vehicle timed out: FV-BULK62
+[sim] live vehicle timed out: FV-BULK63
+[sim] live vehicle timed out: FV-BULK64
+[sim] live vehicle timed out: FV-BULK65
+[sim t=120.0s] active=50 spawned=55/10000 completed=5 avgSpeed=37.3km/h avgTrip=88.3s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=130.0s] active=50 spawned=56/10000 completed=6 avgSpeed=41.8km/h avgTrip=93.8s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=140.0s] active=50 spawned=57/10000 completed=7 avgSpeed=42.1km/h avgTrip=91.6s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=150.0s] active=50 spawned=58/10000 completed=8 avgSpeed=46.0km/h avgTrip=98.1s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=160.0s] active=50 spawned=60/10000 completed=10 avgSpeed=42.0km/h avgTrip=109.0s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim t=170.0s] active=50 spawned=62/10000 completed=12 avgSpeed=42.4km/h avgTrip=108.1s avgAmbTrip=0.0s emergencies=0 avgResponse=0.0s avgTransport=0.0s failedRoutes=0 wsClients=0
+[sim] stopping (t=180.0s, stopRequested=0)
+
+[sim] FINAL SUMMARY at t=180.0s
+  trips in manifest: 10000, spawned: 62, completed: 12, failed-to-route: 0, still active: 50
+  stuck vehicles: 24 ever stuck >5s during the run, 9 stuck right now
+  motorcycle: 2 completed, avg trip 148.9s
+  car: 10 completed, avg trip 99.9s
