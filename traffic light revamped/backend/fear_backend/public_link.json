@@ -1,0 +1,7 @@
+{
+  "on": true,
+  "named": {
+    "hostname": "app.fearsystem.me",
+    "config": "C:\\Users\\mp2nh\\.cloudflared\\fear-system.yml"
+  }
+}

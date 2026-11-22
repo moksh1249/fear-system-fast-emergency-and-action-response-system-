@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+<bounds minlat="28.663400000000003" minlon="77.4964" maxlat="28.6706" maxlon="77.5036"/>
+<node id="900001" lat="28.667" lon="77.5"/>
+<node id="900002" lat="28.667" lon="77.4982"/>
+<node id="900003" lat="28.667" lon="77.5018"/>
+<node id="900004" lat="28.6688" lon="77.5"/>
+<node id="900005" lat="28.665200000000002" lon="77.5"/>
+<node id="900006" lat="28.667" lon="77.4964"/>
+<node id="900007" lat="28.6688" lon="77.5018"/>
+<node id="900010" lat="28.66702" lon="77.50002"><tag k="highway" v="traffic_signals"/></node>
+<node id="900020" lat="28.667900000000003" lon="77.5009"/>
+<node id="900021" lat="28.667900000000003" lon="77.50108"/>
+<node id="900022" lat="28.668080000000003" lon="77.50108"/>
+<node id="900023" lat="28.668080000000003" lon="77.5009"/>
+<way id="800001"><nd ref="900006"/><nd ref="900002"/><nd ref="900001"/><nd ref="900003"/><tag k="highway" v="secondary"/><tag k="name" v="Test Marg"/></way>
+<way id="800002"><nd ref="900004"/><nd ref="900001"/><nd ref="900005"/><tag k="highway" v="tertiary"/><tag k="name" v="Signal Road"/></way>
+<way id="800003"><nd ref="900003"/><nd ref="900007"/><tag k="highway" v="residential"/></way>
+<way id="800010"><nd ref="900020"/><nd ref="900021"/><nd ref="900022"/><nd ref="900023"/><nd ref="900020"/><tag k="building" v="hospital"/><tag k="amenity" v="hospital"/><tag k="name" v="Test City Hospital"/></way>
+</osm>

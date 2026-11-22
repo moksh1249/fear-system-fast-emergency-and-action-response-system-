@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="mobile.css">
+<link rel="stylesheet" href="fear-command.css">
+<script>
+  // Phone map mode: fear_system_deployable shows this page in a WebView as
+  // simulation.html?mobile=1#token=<driver session> (see mobile.js). Decided
+  // here, before any other script runs, because sim-client.js picks where
+  // to connect at load time. The token travels as a URL fragment so it never
+  // reaches a server or its logs, and is dropped from the address once read.
+  (function () {
+    if (!new URLSearchParams(location.search).has("mobile")) return;
+    window.FEAR_MOBILE = { token: new URLSearchParams(location.hash.slice(1)).get("token") || "" };
+    document.documentElement.classList.add("mobile");
+    history.replaceState(null, "", location.pathname + location.search);
+  })();
+</script>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <button id="sidebarToggle" title="Toggle sidebar">☰</button>
+    <div class="brand">Traffic&nbsp;Simulation</div>
+
+    <div class="topbar-group">
+      <button id="zoomOutBtn" title="Zoom out">−</button>
+      <span id="zoomReadout">100%</span>
+      <button id="zoomInBtn" title="Zoom in">+</button>
+      <button id="fitBtn" title="Fit whole map in view">Fit</button>
+    </div>
+
+    <div class="topbar-group">
+      <span class="rotate-icon" title="Rotate map">⟳</span>
+      <input type="range" id="rotationSlider" min="-180" max="180" step="1" value="0" title="Rotate the map view">
+      <span id="rotationReadout">0°</span>
+      <button id="rotationResetBtn" title="Reset rotation to 0°">Reset</button>
+    </div>
+
+    <div class="topbar-group topbar-search">
+      <span class="search-glyph" title="Search any place">🔎</span>
+      <input type="text" id="placeSearchInput" autocomplete="off" spellcheck="false"
+             placeholder="Search a country, city, locality, road or house…  (Ctrl+K)">
+      <div id="placeSearchResults" class="search-results" hidden></div>
+    </div>
+
+    <div class="topbar-group topbar-right">
+      <a class="tool-btn" href="editor.html" title="Open the map editor">✏️ Editor</a>
+      <button id="closeServerBtn" title="Shut down the local serve.py server">⏻ Close</button>
+    </div>
+  </header>
+
+  <div id="main-area">
+
+    <aside id="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Simulation</div>
+        <button id="simPlayBtn" title="Play/pause the fixed-time traffic-light simulation">▶ Play</button>
+        <button id="simResetBtn" title="Reset the simulation clock to 0">↺ Sim Reset</button>
+
+        <div class="sim-clock-row">
+          <span id="simDurationLabel" class="sim-clock-value">00:00:00 elapsed</span>
+        </div>
+        <div class="sim-progress-track"><div id="simDurationBar" class="sim-progress-fill"></div></div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="simSpeedSlider">Fast-forward speed</label>
+          <div class="range-row">
+            <input type="range" id="simSpeedSlider" min="1" max="24" step="1" value="1">
+            <span id="simSpeedReadout" class="range-readout">1x</span>
+          </div>
+          <div class="sim-speed-presets">
+            <button type="button" class="sim-preset-btn" data-speed="1">1x</button>
+            <button type="button" class="sim-preset-btn" data-speed="5">5x</button>
+            <button type="button" class="sim-preset-btn" data-speed="10">10x</button>
+            <button type="button" class="sim-preset-btn" data-speed="24">24x</button>
+          </div>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="simDurationHoursInput">Duration (hours, 0 = unlimited)</label>
+          <input type="number" id="simDurationHoursInput" class="sim-number-input" min="0" step="0.5" value="0">
+        </div>
+      </div>
+
+      <div class="sidebar-section" id="liveSimSection">
+        <div class="sidebar-section-title">Live Vehicle Simulation (C++ engine)</div>
+        <div id="liveSimStatus" class="ext-ctrl-count">Engine: not running</div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimConcurrencyInput">Target concurrent vehicles</label>
+          <input type="number" id="liveSimConcurrencyInput" class="sim-number-input" min="1" max="10000" step="1" value="500">
+        </div>
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimSpeedInput">Playback speed (&times; real time)</label>
+          <input type="number" id="liveSimSpeedInput" class="sim-number-input" min="0.1" max="24" step="0.1" value="1">
+        </div>
+
+        <div class="checkrow" style="margin: 8px 0;">
+          <input type="checkbox" id="liveSimAdvancedAiChk">
+          <label for="liveSimAdvancedAiChk" title="Vehicles look up to 50m ahead and score both lanes before overtaking, instead of just reacting to the vehicle directly in front. More realistic, costs more CPU per vehicle - leave off on a lower-power machine.">🔬 Advanced lane AI (vision + mini-pathfinding)</label>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimSignalModeSelect">Signal-control mode</label>
+          <select id="liveSimSignalModeSelect" class="sim-number-input">
+            <option value="default">Default (fixed-time)</option>
+            <option value="density">Auto (traffic-weighted)</option>
+            <option value="emergency">Emergency-only preemption</option>
+          </select>
+        </div>
+
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimModeSelect">Vehicle source</label>
+          <select id="liveSimModeSelect" class="sim-number-input" title="Simulation: the engine drives the pre-positioned vehicles from the vehicles.json manifest. Realistic: no manifest vehicle is spawned and any already on the road is removed, so the map shows only real vehicles reporting GPS from fear_system_deployable via fear_backend.">
+            <option value="simulation">Simulation (pre-positioned vehicles)</option>
+            <option value="realistic">Realistic (live GPS devices only)</option>
+          </select>
+        </div>
+        <div id="liveSimModeHint" class="ext-ctrl-hint"></div>
+        <div id="liveSimLiveVehicleCount" class="ext-ctrl-hint" style="display:none;"></div>
+
+        <div class="checkrow" style="margin: 8px 0;">
+          <input type="checkbox" id="liveSimIncidentsChk" checked>
+          <label for="liveSimIncidentsChk" title="Periodically spawns a random emergency (fire/medical/accident/crime) as a marker on the map and a row in the Active Incidents list below. Click one to review it and pick how many of each vehicle type to send - the engine auto-dispatches the nearest available (not already responding) vehicles of each requested type.">🚨 Random emergency incidents</label>
+        </div>
+        <div class="sim-control-block">
+          <label class="sim-control-label" for="liveSimIncidentIntervalInput">Spawn every N sim-minutes</label>
+          <input type="number" id="liveSimIncidentIntervalInput" class="sim-number-input" min="0.5" max="60" step="0.5" value="2">
+        </div>
+
+        <div class="live-sim-btn-row">
+          <button id="liveSimStartBtn" title="Start the C++ simulation engine">▶ Start engine</button>
+          <button id="liveSimStopBtn" title="Stop the running simulation engine">◼ Stop engine</button>
+        </div>
+
+        <div id="liveSimReadout" class="ext-ctrl-hint"></div>
+      </div>
+
+      <div class="sidebar-section" id="incidentsSection">
+        <div class="sidebar-section-title incidents-toggle" id="incidentsToggle" title="Show/hide the Emergency Control panel">
+          <span>🚨 Emergency Control</span>
+          <span class="incidents-toggle-chevron" id="incidentsChevron">▾</span>
+        </div>
+        <div id="incidentsBody">
+          <div class="incident-create">
+            <select id="incidentCreateKind" class="sim-number-input" title="Which kind of emergency to create">
+              <option value="random">🎲 Random</option>
+              <option value="fire">🔥 Fire</option>
+              <option value="medical">🚑 Medical emergency</option>
+              <option value="accident">💥 Traffic accident</option>
+              <option value="crime">🚨 Crime in progress</option>
+            </select>
+            <button id="incidentCreateBtn" title="Arms a map click: the next point you click becomes this incident's location">+ Create</button>
+          </div>
+          <div id="incidentsCount" class="ext-ctrl-count">No active incidents</div>
+          <div id="incidentsList" class="incident-card-list"></div>
+          <div class="ext-ctrl-hint">Every active incident is listed here with its own dispatch controls - no need to click into one to act on it. Click "+ Create", then click the map to pinpoint a new one; a marker click on the map just highlights the matching card.</div>
+        </div>
+      </div>
+
+      <div class="sidebar-section" id="extControlSection">
+        <div class="sidebar-section-title">External Control</div>
+        <div id="extControlCount" class="ext-ctrl-count">No active external control</div>
+        <div id="extControlList" class="ext-ctrl-list"></div>
+        <div class="ext-ctrl-hint">Select a traffic-light intersection on the map to take control of it for testing.</div>
+      </div>
+
+      <div class="sidebar-section" id="selectionFiltersSection">
+        <div class="sidebar-section-title">Selection Filters</div>
+        <div id="selectionFiltersContainer" style="display: flex; flex-direction: column; gap: 4px; max-height: 250px; overflow-y: auto; padding-right: 4px;">
+          <!-- Checkboxes generated dynamically in map-core.js -->
+        </div>
+      </div>
+
+      <div class="sidebar-section" id="areaSection">
+        <div class="sidebar-section-title">Area Classification</div>
+        <div id="areaLayersContainer" class="area-layers"></div>
+      </div>
+
+      <div class="sidebar-section" id="areaFocusSection">
+        <div class="sidebar-section-title">Load Map By Area</div>
+        <div id="areaFocusContainer" class="area-focus"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">View</div>
+        <button id="arrowsToggleBtn" title="Show/hide one-way direction arrows">↗ Arrows</button>
+        <button id="timersToggleBtn" title="Show/hide traffic-light countdown timers">⏱ Timers</button>
+        <button id="buildingsToggleBtn" title="Show/hide buildings">🏢 Buildings</button>
+        <button id="amenitiesToggleBtn" title="Show/hide amenities">📍 Amenities</button>
+        <button id="settingsBtn" title="Simulation view settings">⚙ Settings</button>
+      </div>
+    </aside>
+
+    <main id="workspace">
+      <canvas id="mapCanvas"></canvas>
+
+      <div id="hint">Read-only viewer: drag to pan, scroll to zoom, click a feature to inspect it.</div>
+
+      <div id="placeBanner" class="place-banner" hidden>
+        <span id="placeBannerLevel" class="place-banner-level"></span>
+        <div class="place-banner-text">
+          <div id="placeBannerName" class="place-banner-name"></div>
+          <div id="placeBannerContext" class="place-banner-context"></div>
+        </div>
+        <button id="placeBannerClose" title="Clear this view and show the whole map again">×</button>
+      </div>
+
+      <div id="toast" hidden></div>
+
+      <aside id="inspector" hidden>
+        <div class="insp-head">
+          <span id="inspTitle">Selection</span>
+          <button id="inspClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="inspBody"></div>
+      </aside>
+
+      <aside id="settingsPanel" hidden>
+        <div class="insp-head">
+          <span>Settings</span>
+          <button id="settingsClose" title="Close">×</button>
+        </div>
+        <div class="insp-body" id="settingsBody"></div>
+      </aside>
+    </main>
+
+  </div>
+
+  <footer id="statusbar">
+    <span id="statTool">Simulation viewer (read-only)</span>
+    <span id="statCoords">lat --, lon --</span>
+    <span id="statCounts">-- nodes, -- roads</span>
+    <span id="statSelection"></span>
+  </footer>
+
+</div>
+
+<script src="map-core.js"></script>
+<script src="settings.js"></script>
+<script src="redlight.js"></script>
+<script src="areas.js"></script>
+<script src="areas-ui.js"></script>
+<script src="sim-client.js"></script>
+<script src="simulation.js"></script>
+<script src="fear-command.js"></script>
+<script src="mobile.js"></script>
+</body>
+</html>

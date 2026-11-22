@@ -1,0 +1,276 @@
+/* ============================================================
+   Phone map mode (simulation.html?mobile=1 - see mobile.js).
+   Every rule is scoped under html.mobile, set by the inline script in
+   simulation.html's <head>, so the laptop page is untouched. Same tokens and
+   neo-brutalist look as style.css.
+   ============================================================ */
+
+html.mobile body{ font-size: 14px; overscroll-behavior: none; }
+html.mobile #app{ position: relative; height: 100%; }
+
+/* The canvas gets the whole screen: sidebar, status bar, hint and every
+   laptop-only control are hidden (they stay in the DOM - the shared scripts
+   wire them at load). */
+html.mobile #sidebar,
+html.mobile #statusbar,
+html.mobile #hint,
+html.mobile #placeBanner,
+html.mobile #settingsPanel{ display: none !important; }
+html.mobile #mapCanvas{ touch-action: none; }
+
+/* ---- top stack: the topbar becomes a floating column holding just the search ---- */
+html.mobile #topbar{
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 30;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 10px 0;
+  background: transparent;
+  border: none;
+  pointer-events: none;
+}
+html.mobile #topbar > *{ display: none; pointer-events: auto; }
+html.mobile #topbar > .topbar-search,
+html.mobile #topbar > #mobileChips,
+html.mobile #topbar > #mobileStatus{ display: flex; }
+html.mobile #topbar > #mobileAlert:not([hidden]),
+html.mobile #topbar > #mobileNotice:not([hidden]){ display: block; }
+
+html.mobile .topbar-search{
+  position: relative;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+html.mobile #placeSearchInput{
+  font-size: 15px;
+  padding: 9px 4px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+html.mobile #placeSearchInput:focus{ box-shadow: none; }
+html.mobile .search-results{
+  left: -2px; right: -2px;
+  max-height: 55vh;
+}
+html.mobile .search-row{ padding: 11px 12px; }
+html.mobile .search-name{ font-size: 14px; }
+html.mobile .search-context{ font-size: 12px; }
+
+html.mobile .mobile-chips{
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 4px 4px 0;
+}
+html.mobile .mobile-chips::-webkit-scrollbar{ display: none; }
+.mobile-chip{
+  flex: 0 0 auto;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 7px 12px;
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+.mobile-chip:active{ transform: translate(2px, 2px); box-shadow: none; }
+
+.mobile-alert{
+  padding: 10px 12px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--danger);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 3px 3px 0 var(--shadow);
+  animation: mobile-alert-flash 0.9s steps(2, start) infinite;
+}
+@keyframes mobile-alert-flash{ 50%{ background: var(--accent); } }
+
+.mobile-notice{
+  padding: 8px 12px;
+  font-size: 12.5px;
+  background: var(--warning);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+}
+
+html.mobile .mobile-status{
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: 999px;
+}
+.mobile-status::before{
+  content: "";
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: var(--panel-border);
+}
+.mobile-status.ok::before{ background: var(--success); }
+.mobile-status.warn::before{ background: var(--warning); }
+
+/* ---- bottom stack: nearby panel + recenter button, then the place/route card ---- */
+.mobile-bottom{
+  position: absolute;
+  left: 10px; right: 10px; bottom: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+.mobile-bottom > *{ pointer-events: auto; }
+.mobile-bottom-row{
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
+}
+.mobile-bottom-row > *{ pointer-events: auto; }
+
+.mobile-fab{
+  flex: 0 0 auto;
+  width: 48px; height: 48px;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+.mobile-fab.following{ color: #fff; background: var(--accent); }
+.mobile-fab:active{ transform: translate(2px, 2px); box-shadow: none; }
+
+.mobile-nearby{
+  min-width: 0;
+  max-width: calc(100% - 58px);
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 3px 3px 0 var(--shadow);
+  overflow: hidden;
+}
+.mobile-nearby.has-responding{ border-color: var(--danger); box-shadow: 3px 3px 0 var(--danger); }
+.mobile-nearby-head{
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+}
+.mobile-nearby.has-any .mobile-nearby-head{ color: var(--text); }
+.mobile-nearby-list{
+  max-height: 34vh;
+  overflow-y: auto;
+  border-top: 2px solid var(--border);
+}
+.mobile-nearby-row{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--text);
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1.5px solid var(--panel-border);
+}
+.mobile-nearby-row:last-child{ border-bottom: none; }
+.mobile-nearby-row.responding{ background: #fde7ed; }
+.mobile-nearby-icon{ font-size: 18px; flex: 0 0 auto; }
+.mobile-nearby-text{ flex: 1 1 auto; min-width: 0; }
+.mobile-nearby-dist{ flex: 0 0 auto; font-weight: 700; font-size: 12px; }
+
+.mobile-card{
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  background: var(--panel-bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
+.mobile-card-text{ flex: 1 1 auto; min-width: 0; }
+.mobile-card-level{
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.mobile-card-name{ margin-top: 5px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+.mobile-card-context{ margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+.mobile-card-hint{ margin-top: 6px; font-size: 11.5px; color: var(--muted); font-style: italic; }
+.mobile-card-actions{ display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.mobile-card-go{
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  padding: 10px 14px;
+  background: var(--accent);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+.mobile-card-go:disabled{ opacity: 0.6; }
+.mobile-card-close{
+  flex: 0 0 auto;
+  width: 36px; height: 36px;
+  font-size: 20px;
+  line-height: 1;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 50%;
+}
+
+/* ---- the shared inspector becomes a bottom sheet, above the bottom stack ---- */
+html.mobile #inspector{
+  top: auto;
+  left: 0; right: 0; bottom: 0;
+  width: auto !important; min-width: 0; max-width: none;
+  max-height: 50%;
+  resize: none;
+  border-left: none;
+  border-top: 3px solid var(--border);
+  border-radius: 14px 14px 0 0;
+  box-shadow: 0 -4px 0 var(--shadow);
+  z-index: 40;
+}
+
+html.mobile #toast{ bottom: auto; top: 42%; max-width: calc(100% - 32px); text-align: center; z-index: 50; }

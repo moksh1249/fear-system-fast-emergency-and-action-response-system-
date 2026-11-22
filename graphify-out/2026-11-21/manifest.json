@@ -1,0 +1,908 @@
+{
+  ".claude/settings.json": {
+    "mtime": 1795195752.5229936,
+    "seen": 1795196099.150642,
+    "ast_hash": "006012ec5a3dce23a1175d927b6408ad",
+    "semantic_hash": "006012ec5a3dce23a1175d927b6408ad"
+  },
+  "traffic light revamped/backend/__init__.py": {
+    "mtime": 1789141381.2087235,
+    "seen": 1795196099.150647,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "traffic light revamped/backend/add_buildings.py": {
+    "mtime": 1787888452.579791,
+    "seen": 1795196099.150649,
+    "ast_hash": "449833a9487157794693f4e8d0d845f1",
+    "semantic_hash": "449833a9487157794693f4e8d0d845f1"
+  },
+  "traffic light revamped/backend/ch/ch_graph.hpp": {
+    "mtime": 1787978157.439901,
+    "seen": 1795196099.15065,
+    "ast_hash": "00689a3b74fcd033b9c897fe758a59a4",
+    "semantic_hash": "00689a3b74fcd033b9c897fe758a59a4"
+  },
+  "traffic light revamped/backend/ch/ch_preprocess.cpp": {
+    "mtime": 1787978112.8223448,
+    "seen": 1795196099.1506512,
+    "ast_hash": "5abe401d882c206cdb7e39f2697a54d2",
+    "semantic_hash": "5abe401d882c206cdb7e39f2697a54d2"
+  },
+  "traffic light revamped/backend/ch/ch_query.cpp": {
+    "mtime": 1787978202.000219,
+    "seen": 1795196099.150652,
+    "ast_hash": "f7a095f06f0a341fe34a94bc7dcb9251",
+    "semantic_hash": "f7a095f06f0a341fe34a94bc7dcb9251"
+  },
+  "traffic light revamped/backend/ch/json.hpp": {
+    "mtime": 1787978067.8334599,
+    "seen": 1795196099.150653,
+    "ast_hash": "99caacf5cf536d983934e63a961f4dfa",
+    "semantic_hash": "99caacf5cf536d983934e63a961f4dfa"
+  },
+  "traffic light revamped/backend/fear_backend/__init__.py": {
+    "mtime": 1789141383.98273,
+    "seen": 1795196099.1506536,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "traffic light revamped/backend/fear_backend/config.py": {
+    "mtime": 1795266313.2683275,
+    "seen": 1795267651.5553257,
+    "ast_hash": "cfc885b4cc939165543fbca667fbf862",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/db.py": {
+    "mtime": 1789141407.5271711,
+    "seen": 1795196099.150655,
+    "ast_hash": "8fdcc3fc2aa91766119078c7057c5bca",
+    "semantic_hash": "8fdcc3fc2aa91766119078c7057c5bca"
+  },
+  "traffic light revamped/backend/fear_backend/discovery.py": {
+    "mtime": 1789156782.4589148,
+    "seen": 1795196099.150656,
+    "ast_hash": "9f2a63f8d4583845d5f23ad435b32359",
+    "semantic_hash": "9f2a63f8d4583845d5f23ad435b32359"
+  },
+  "traffic light revamped/backend/fear_backend/lan_discovery.py": {
+    "mtime": 1789249214.8768015,
+    "seen": 1795196099.1506567,
+    "ast_hash": "de15152d19d5c3579c51ee126f3bc96f",
+    "semantic_hash": "de15152d19d5c3579c51ee126f3bc96f"
+  },
+  "traffic light revamped/backend/fear_backend/main.py": {
+    "mtime": 1795269929.881081,
+    "seen": 1795270192.9635704,
+    "ast_hash": "c544d38ed621ba442f0d56cec69e5aa4",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/map_data.py": {
+    "mtime": 1789147980.626326,
+    "seen": 1795196099.1506584,
+    "ast_hash": "8f75d80a03bac33ad1a1cc084417b7ce",
+    "semantic_hash": "8f75d80a03bac33ad1a1cc084417b7ce"
+  },
+  "traffic light revamped/backend/fear_backend/security.py": {
+    "mtime": 1789141396.976156,
+    "seen": 1795196099.150659,
+    "ast_hash": "6e2ea87b55d34a3790f6d314bacfb52e",
+    "semantic_hash": "6e2ea87b55d34a3790f6d314bacfb52e"
+  },
+  "traffic light revamped/backend/fear_backend/sim_bridge.py": {
+    "mtime": 1795198134.42353,
+    "seen": 1795201578.199584,
+    "ast_hash": "669d068f1748e9dbc73a3726801e397e",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/sim_relay.py": {
+    "mtime": 1790399893.988575,
+    "seen": 1795196099.1506605,
+    "ast_hash": "37f232fbd3a964b8403bac1954a6f8d2",
+    "semantic_hash": "37f232fbd3a964b8403bac1954a6f8d2"
+  },
+  "traffic light revamped/backend/generate_vehicles.py": {
+    "mtime": 1788259241.1106648,
+    "seen": 1795196099.1506615,
+    "ast_hash": "1876c51a934a9ffe92d317c10a426deb",
+    "semantic_hash": "1876c51a934a9ffe92d317c10a426deb"
+  },
+  "traffic light revamped/backend/osm_to_json.py": {
+    "mtime": 1790067354.735842,
+    "seen": 1795196099.1506622,
+    "ast_hash": "81a29ce0abac3ef1400a45c8b66975cf",
+    "semantic_hash": "81a29ce0abac3ef1400a45c8b66975cf"
+  },
+  "traffic light revamped/backend/signal_control.py": {
+    "mtime": 1787935445.604934,
+    "seen": 1795196099.150663,
+    "ast_hash": "5162807abb9b424be9daedda50863f3e",
+    "semantic_hash": "5162807abb9b424be9daedda50863f3e"
+  },
+  "traffic light revamped/backend/signal_control_example.cpp": {
+    "mtime": 1787935493.8969257,
+    "seen": 1795196099.1506636,
+    "ast_hash": "50249dae554a5225f0476d91be94bb48",
+    "semantic_hash": "50249dae554a5225f0476d91be94bb48"
+  },
+  "traffic light revamped/backend/sim/redlights.hpp": {
+    "mtime": 1788326301.0885558,
+    "seen": 1795196099.1506648,
+    "ast_hash": "aa0ed6b542ae172ff394a9f3a7bd8692",
+    "semantic_hash": "aa0ed6b542ae172ff394a9f3a7bd8692"
+  },
+  "traffic light revamped/backend/sim/road_graph.hpp": {
+    "mtime": 1795204997.1525538,
+    "seen": 1795205897.3070412,
+    "ast_hash": "4a59f444825bc2b2ffebb63bfa11ce32",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/sim/sim_engine.cpp": {
+    "mtime": 1795205104.2046673,
+    "seen": 1795205897.3070426,
+    "ast_hash": "da173680688b37f5928d5ce10930bac9",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/sim/vehicles.hpp": {
+    "mtime": 1795205073.5859034,
+    "seen": 1795205897.3070438,
+    "ast_hash": "d19993cff07a9e273872529453e0ee6a",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/areas-ui.js": {
+    "mtime": 1790400059.64513,
+    "seen": 1795196099.1506677,
+    "ast_hash": "b6da28f6331e4136c0b8d47f3c571985",
+    "semantic_hash": "b6da28f6331e4136c0b8d47f3c571985"
+  },
+  "traffic light revamped/front-end/areas.js": {
+    "mtime": 1790067963.9096272,
+    "seen": 1795196099.1506689,
+    "ast_hash": "1331c9f5da3f7ff8630ba1b056e0e81d",
+    "semantic_hash": "1331c9f5da3f7ff8630ba1b056e0e81d"
+  },
+  "traffic light revamped/front-end/editor.js": {
+    "mtime": 1795206487.9511113,
+    "seen": 1795206628.0118718,
+    "ast_hash": "2e9a6b49600b024d31f0abd3850a1add",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/map-core.js": {
+    "mtime": 1795208701.2501504,
+    "seen": 1795209505.9563985,
+    "ast_hash": "251f6bb6744e04676c37b80b5b3c3cce",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/map_data.json": {
+    "mtime": 1790068614.8005326,
+    "seen": 1795196099.1506708,
+    "ast_hash": "",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/mobile.js": {
+    "mtime": 1790400280.1340432,
+    "seen": 1795196099.1506717,
+    "ast_hash": "d004d52be3a2478883441b1863305759",
+    "semantic_hash": "d004d52be3a2478883441b1863305759"
+  },
+  "traffic light revamped/front-end/redlight.js": {
+    "mtime": 1795204917.8705869,
+    "seen": 1795205897.3073218,
+    "ast_hash": "65e447968b163a8713d862447126d66c",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/routetest.js": {
+    "mtime": 1787887007.2626894,
+    "seen": 1795196099.1506732,
+    "ast_hash": "4d9bfc454f31301b4f06a496a36f4cd0",
+    "semantic_hash": "4d9bfc454f31301b4f06a496a36f4cd0"
+  },
+  "traffic light revamped/front-end/settings.js": {
+    "mtime": 1795208701.2481506,
+    "seen": 1795209505.9567492,
+    "ast_hash": "df27260144da4c8ba6853e05b2e27212",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/sim-client.js": {
+    "mtime": 1795266501.5143597,
+    "seen": 1795267651.5576906,
+    "ast_hash": "a8d5257c8b986c9985f175b5fa071b96",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/simulation.js": {
+    "mtime": 1795203338.4412785,
+    "seen": 1795205897.3074937,
+    "ast_hash": "616acd1361dc878e20d6d438ddb368b4",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/maps/vehicles.json": {
+    "mtime": 1789155680.895863,
+    "seen": 1795196099.1506763,
+    "ast_hash": "64b7237487b380ae26c9b13668fde3ac",
+    "semantic_hash": "64b7237487b380ae26c9b13668fde3ac"
+  },
+  "traffic light revamped/serve.py": {
+    "mtime": 1795206487.9491098,
+    "seen": 1795206628.0124156,
+    "ast_hash": "023fe6e82b685c7c2dc6f314e6ade8a3",
+    "semantic_hash": ""
+  },
+  ".claude/CLAUDE.md": {
+    "mtime": 1795195752.5347087,
+    "seen": 1795196099.1506777,
+    "ast_hash": "9b31786b637be3c13978bec4c2330752",
+    "semantic_hash": "9b31786b637be3c13978bec4c2330752"
+  },
+  "CLAUDE.md": {
+    "mtime": 1795195752.5229936,
+    "seen": 1795196099.1506786,
+    "ast_hash": "dfe5fa7939121e96d61b54077cc9ab84",
+    "semantic_hash": "dfe5fa7939121e96d61b54077cc9ab84"
+  },
+  "traffic light revamped/IMPLEMENTATION_STATUS.md": {
+    "mtime": 1790067491.4494212,
+    "seen": 1795196099.1506793,
+    "ast_hash": "05a21de330180734f685cfcce7e7861a",
+    "semantic_hash": "05a21de330180734f685cfcce7e7861a"
+  },
+  "traffic light revamped/front-end/editor.html": {
+    "mtime": 1795206526.326571,
+    "seen": 1795206628.0130708,
+    "ast_hash": "a2a7ae7a15baefca920d3085f5ca1ae5",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/index.html": {
+    "mtime": 1787857221.1708808,
+    "seen": 1795196099.1506805,
+    "ast_hash": "75b448833191ffcc87951c6ce027021a",
+    "semantic_hash": "75b448833191ffcc87951c6ce027021a"
+  },
+  "traffic light revamped/front-end/simulation.html": {
+    "mtime": 1795203338.4402852,
+    "seen": 1795205897.308285,
+    "ast_hash": "2c65c98e8678cf7649b8ffbd79d5cd43",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/analysis_options.yaml": {
+    "mtime": 1795200144.7453718,
+    "seen": 1795201578.1995087,
+    "ast_hash": "6da42690d049c11b8b6b1f2474f7b67c",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/fear_core.dart": {
+    "mtime": 1795203519.8666677,
+    "seen": 1795205897.3016095,
+    "ast_hash": "644d97383147e55682e08e82757132e0",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/api.dart": {
+    "mtime": 1795212881.0663583,
+    "seen": 1795212988.6179419,
+    "ast_hash": "b3a5c107fb62a5dc1197586a4a83fa5d",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/discovery_io.dart": {
+    "mtime": 1795200234.8097465,
+    "seen": 1795201578.199519,
+    "ast_hash": "c39ecc5f0e993d1439c139327df1cdbb",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/discovery_stub.dart": {
+    "mtime": 1795200234.7699094,
+    "seen": 1795201578.1995206,
+    "ast_hash": "8def7db79f62add64d31191e05958868",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/format.dart": {
+    "mtime": 1795200349.5042188,
+    "seen": 1795201578.199522,
+    "ast_hash": "24b742ccbf8582d4f88ec36e0469639d",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/location.dart": {
+    "mtime": 1795205729.9687345,
+    "seen": 1795205897.301913,
+    "ast_hash": "cde53df3007424032c925b9adc0f2db5",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/map.dart": {
+    "mtime": 1795268685.308856,
+    "seen": 1795269311.4019206,
+    "ast_hash": "b82f985f0529baf6533cf52294655756",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/realtime.dart": {
+    "mtime": 1795266428.0082479,
+    "seen": 1795267651.553014,
+    "ast_hash": "20f24dfc714ad16ca033653a95396797",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/server.dart": {
+    "mtime": 1795266428.0072477,
+    "seen": 1795267651.55309,
+    "ast_hash": "4398a18576bfb2cdd7dc61400a553f7b",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/session.dart": {
+    "mtime": 1795269929.882081,
+    "seen": 1795270192.953876,
+    "ast_hash": "a58dec07cb41f7d5f06d5e670fa95bfd",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/theme.dart": {
+    "mtime": 1795200349.462705,
+    "seen": 1795201578.199529,
+    "ast_hash": "42c5dc61de6240fa136cdcc1c13c0f30",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/widgets.dart": {
+    "mtime": 1795266428.0374136,
+    "seen": 1795267651.5531573,
+    "ast_hash": "c89839dc6b47451b175b556773189d62",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/pubspec.yaml": {
+    "mtime": 1795203518.2306986,
+    "seen": 1795205897.3019981,
+    "ast_hash": "6d057a9148f0cdb82ebfb452e75ed9d5",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/analysis_options.yaml": {
+    "mtime": 1795200150.1139066,
+    "seen": 1795201578.1995316,
+    "ast_hash": "9e65f4b9beebb674c0dc252f70a5c177",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/build.gradle.kts": {
+    "mtime": 1795200150.1239274,
+    "seen": 1795201578.1995323,
+    "ast_hash": "3ec542347415992d4c4066a204298602",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/src/main/kotlin/com/fear/fear_gov/MainActivity.kt": {
+    "mtime": 1795200150.1360579,
+    "seen": 1795201578.199533,
+    "ast_hash": "9a1bc877fb58495a1f3201e6e588668f",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/build.gradle.kts": {
+    "mtime": 1795200150.1438718,
+    "seen": 1795201578.199534,
+    "ast_hash": "803fe22651fbe96ed401eb0b66a492d1",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/settings.gradle.kts": {
+    "mtime": 1795200150.2401276,
+    "seen": 1795201578.1995347,
+    "ast_hash": "f276a44edd917afd836899357fdae60e",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/admin_pages.dart": {
+    "mtime": 1795200775.2720292,
+    "seen": 1795201578.1995356,
+    "ast_hash": "9a04a379f89dd6641d276b23ab7e466c",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/alerts_page.dart": {
+    "mtime": 1795200683.2480114,
+    "seen": 1795201578.199536,
+    "ast_hash": "76898439fa89fa572a4469c250b51f20",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/command_shell.dart": {
+    "mtime": 1795267030.4542842,
+    "seen": 1795267651.5537827,
+    "ast_hash": "eb62d9f973065f12c4006084fad9a1c3",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/command_state.dart": {
+    "mtime": 1795266428.0384078,
+    "seen": 1795267651.5537844,
+    "ast_hash": "b687134e110ff2c09e076c5b644cfd57",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/incident_panel.dart": {
+    "mtime": 1795267030.482318,
+    "seen": 1795267651.553785,
+    "ast_hash": "7a4543100e7aecb2a4b5b2c8e243d005",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/live_map_page.dart": {
+    "mtime": 1795269210.709809,
+    "seen": 1795269311.405174,
+    "ast_hash": "3781363c5a3181831b597136452e8ac1",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/ops_pages.dart": {
+    "mtime": 1795268810.9399152,
+    "seen": 1795269311.4051766,
+    "ast_hash": "7e9410b90549fb7849e222c964b30bdc",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/registry_page.dart": {
+    "mtime": 1795267030.4542842,
+    "seen": 1795267651.553856,
+    "ast_hash": "f0968a56795322db03196549b53185f5",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/driver/driver_home.dart": {
+    "mtime": 1795266428.0394077,
+    "seen": 1795267651.5538573,
+    "ast_hash": "1d47d2b7fe5eda553746904d6312a04a",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/login_screen.dart": {
+    "mtime": 1795203740.6767912,
+    "seen": 1795205897.303072,
+    "ast_hash": "0de54e013e1ee67c5a9bc7d380689ed7",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/main.dart": {
+    "mtime": 1795266428.0384078,
+    "seen": 1795267651.5539901,
+    "ast_hash": "66b6b60b047c9ba0d8066a08eadf0df7",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/pubspec.yaml": {
+    "mtime": 1795266890.6375413,
+    "seen": 1795267651.5539918,
+    "ast_hash": "8be514bfa9c2085dab8130f559b62b8a",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/manifest.json": {
+    "mtime": 1795200150.293462,
+    "seen": 1795201578.1995444,
+    "ast_hash": "d207946068589171f36345c5c016c2f1",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/analysis_options.yaml": {
+    "mtime": 1795200152.760605,
+    "seen": 1795201578.1995451,
+    "ast_hash": "9e65f4b9beebb674c0dc252f70a5c177",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/build.gradle.kts": {
+    "mtime": 1795200152.761606,
+    "seen": 1795201578.1995459,
+    "ast_hash": "393d2b1841b9db7dd8ecd6244aafe283",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/src/main/kotlin/com/fear/fear_public/MainActivity.kt": {
+    "mtime": 1795200152.7636077,
+    "seen": 1795201578.1995466,
+    "ast_hash": "eb668266897264fa804b41d5ead33a36",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/build.gradle.kts": {
+    "mtime": 1795200152.765112,
+    "seen": 1795201578.1995473,
+    "ast_hash": "803fe22651fbe96ed401eb0b66a492d1",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/settings.gradle.kts": {
+    "mtime": 1795200152.7841527,
+    "seen": 1795201578.1995482,
+    "ast_hash": "f276a44edd917afd836899357fdae60e",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/home.dart": {
+    "mtime": 1795205549.879876,
+    "seen": 1795205897.3036883,
+    "ast_hash": "86f8d372f315a940c068adfae7f65cb3",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/login.dart": {
+    "mtime": 1795209266.4423685,
+    "seen": 1795209505.9487917,
+    "ast_hash": "39e470a2974e8c9c73cdf47871b97868",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/main.dart": {
+    "mtime": 1795266428.0384078,
+    "seen": 1795267651.5545375,
+    "ast_hash": "9c7fcb101abd5c454d479a87f52cd4f9",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/map_tab.dart": {
+    "mtime": 1795266969.0886424,
+    "seen": 1795267651.5545385,
+    "ast_hash": "530027a3ad0f9108781678454fab8d02",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/public_state.dart": {
+    "mtime": 1795266516.1800165,
+    "seen": 1795267651.5545394,
+    "ast_hash": "3aa6ffc49f59700aa538edcfc394afc6",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/sos.dart": {
+    "mtime": 1795266969.0876153,
+    "seen": 1795267651.554542,
+    "ast_hash": "f7a8c76eb40ce136312fbebb1e7fdbdb",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/tabs.dart": {
+    "mtime": 1795209257.521608,
+    "seen": 1795209505.9490726,
+    "ast_hash": "9fcb074f56fd97b57c415ff1168b98cd",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/pubspec.yaml": {
+    "mtime": 1795266873.7630544,
+    "seen": 1795267651.5546725,
+    "ast_hash": "5a542ef43e3a276ad6bf9884972611d7",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/access.py": {
+    "mtime": 1795212523.094058,
+    "seen": 1795212988.6211245,
+    "ast_hash": "d8ecf734a60335a4733a3a6ed17cd91f",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/auth_v2.py": {
+    "mtime": 1795198148.1707363,
+    "seen": 1795201578.1995664,
+    "ast_hash": "4fc051b0ef4009449c973abe635738f9",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/bootstrap.py": {
+    "mtime": 1795198501.5924883,
+    "seen": 1795201578.199567,
+    "ast_hash": "a2d90f3d1692bccfef63c78da43aee43",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/geo.py": {
+    "mtime": 1795198023.592941,
+    "seen": 1795201578.1995711,
+    "ast_hash": "8028383cb134f6abd57a11ce0fce81e0",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/gov_api.py": {
+    "mtime": 1795266768.37156,
+    "seen": 1795267651.555541,
+    "ast_hash": "bb9c6f2e4e8e63aae260d9d52c144cdf",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/incidents.py": {
+    "mtime": 1795212308.5183935,
+    "seen": 1795212988.6214964,
+    "ast_hash": "fc3e1b9b9f313985960bd55cb093164e",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/live.py": {
+    "mtime": 1795268623.5543375,
+    "seen": 1795269311.4111304,
+    "ast_hash": "e94700c1cdfb29060b12504999010c17",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/places.py": {
+    "mtime": 1795208914.3614125,
+    "seen": 1795209505.9530735,
+    "ast_hash": "3375e5d83b2a059951693435c1c13162",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/providers.py": {
+    "mtime": 1795198062.8303502,
+    "seen": 1795201578.1995783,
+    "ast_hash": "15d32554439ea18a6b6b2e90b1facc51",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/public_api.py": {
+    "mtime": 1795266516.1800165,
+    "seen": 1795267651.556193,
+    "ast_hash": "aadbb3cf52fc3b51200f7f51f5bc7e73",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/realtime.py": {
+    "mtime": 1795268623.5543375,
+    "seen": 1795269311.4120388,
+    "ast_hash": "1d6d13cee30d0cf5eee489d934a7e85c",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/routing.py": {
+    "mtime": 1795202905.2118976,
+    "seen": 1795205897.306495,
+    "ast_hash": "bc52e2149cbdb21ca80c2e746b0df7d7",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/schema_v2.py": {
+    "mtime": 1795266313.2683275,
+    "seen": 1795267651.5562625,
+    "ast_hash": "b1fe68448066b3b9b42422f55805050a",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/seed_demo.py": {
+    "mtime": 1795203068.3708968,
+    "seen": 1795205897.3065653,
+    "ast_hash": "73fd3f46954a36df441baf54273aa0c9",
+    "semantic_hash": ""
+  },
+  "apps/DEMO_CREDENTIALS.md": {
+    "mtime": 1795203083.0602915,
+    "seen": 1795205897.3077455,
+    "ast_hash": "61328386a5f276c5cd2aa1d6fe0e737d",
+    "semantic_hash": ""
+  },
+  "apps/README.md": {
+    "mtime": 1795272943.1150005,
+    "seen": 1795272947.0329902,
+    "ast_hash": "3ccf62e38a166e3dbc780f304460f6f2",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/CHANGELOG.md": {
+    "mtime": 1795200144.7554214,
+    "seen": 1795201578.1996114,
+    "ast_hash": "631676b66d249389fa7c1c5be3dfca25",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/README.md": {
+    "mtime": 1795200144.8001664,
+    "seen": 1795201578.1996124,
+    "ast_hash": "2be37c50961bde04405832381916dda7",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/README.md": {
+    "mtime": 1795200150.2674966,
+    "seen": 1795201578.199613,
+    "ast_hash": "e4eaa2c297fff804b19ebe9e705c5d2f",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/index.html": {
+    "mtime": 1795200150.2858088,
+    "seen": 1795201578.1996143,
+    "ast_hash": "ccd6f8fa6c2a0dc57b49842ba5abb25e",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/README.md": {
+    "mtime": 1795200152.7886505,
+    "seen": 1795201578.199615,
+    "ast_hash": "425a2677ae2961e3b191a42f425e8525",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/src/main/res/mipmap-hdpi/ic_launcher.png": {
+    "mtime": 1773412375.091296,
+    "seen": 1795201578.1996198,
+    "ast_hash": "13e9c72ec37fac220397aa819fa1ef2d",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/src/main/res/mipmap-mdpi/ic_launcher.png": {
+    "mtime": 1773412375.0923,
+    "seen": 1795201578.1996207,
+    "ast_hash": "6270344430679711b81476e29878caa7",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png": {
+    "mtime": 1773412375.0923,
+    "seen": 1795201578.1996214,
+    "ast_hash": "a0a8db5985280b3679d99a820ae2db79",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
+    "mtime": 1773412375.0932982,
+    "seen": 1795201578.1996222,
+    "ast_hash": "afe1b655b9f32da22f9a4301bb8e6ba8",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
+    "mtime": 1773412375.0942955,
+    "seen": 1795201578.1996229,
+    "ast_hash": "57838d52c318faff743130c3fcfae0c6",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/favicon.png": {
+    "mtime": 1773412375.145219,
+    "seen": 1795201578.1996236,
+    "ast_hash": "5dcef449791fa27946b3d35ad8803796",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/icons/Icon-192.png": {
+    "mtime": 1773412375.1462452,
+    "seen": 1795201578.1996243,
+    "ast_hash": "ac9a721a12bbc803b44f645561ecb1e1",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/icons/Icon-512.png": {
+    "mtime": 1773412375.1472454,
+    "seen": 1795201578.199625,
+    "ast_hash": "96e752610906ba2a93c65f8abe1645f1",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/icons/Icon-maskable-192.png": {
+    "mtime": 1776113433.5668685,
+    "seen": 1795201578.199626,
+    "ast_hash": "c457ef57daa1d16f64b27b786ec2ea3c",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/web/icons/Icon-maskable-512.png": {
+    "mtime": 1776113433.5668685,
+    "seen": 1795201578.1996264,
+    "ast_hash": "301a7604d45b3e739efc881eb04896ea",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/src/main/res/mipmap-hdpi/ic_launcher.png": {
+    "mtime": 1773412375.091296,
+    "seen": 1795201578.1996276,
+    "ast_hash": "13e9c72ec37fac220397aa819fa1ef2d",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/src/main/res/mipmap-mdpi/ic_launcher.png": {
+    "mtime": 1773412375.0923,
+    "seen": 1795201578.199628,
+    "ast_hash": "6270344430679711b81476e29878caa7",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png": {
+    "mtime": 1773412375.0923,
+    "seen": 1795201578.1996288,
+    "ast_hash": "a0a8db5985280b3679d99a820ae2db79",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
+    "mtime": 1773412375.0932982,
+    "seen": 1795201578.1996295,
+    "ast_hash": "afe1b655b9f32da22f9a4301bb8e6ba8",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
+    "mtime": 1773412375.0942955,
+    "seen": 1795201578.1996303,
+    "ast_hash": "57838d52c318faff743130c3fcfae0c6",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/navigation.dart": {
+    "mtime": 1795203608.8211658,
+    "seen": 1795205897.301916,
+    "ast_hash": "1594d906fa674f3af04f14e40b7d6cf9",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/project_map.dart": {
+    "mtime": 1795268685.308856,
+    "seen": 1795269311.4021478,
+    "ast_hash": "51b300883d618c7da05b6c372ee15187",
+    "semantic_hash": ""
+  },
+  "apps/fear_core/lib/src/scanner.dart": {
+    "mtime": 1795203579.2649653,
+    "seen": 1795205897.3019197,
+    "ast_hash": "2739a961a77dda26148695643c4bf388",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/mapadmin_api.py": {
+    "mtime": 1795205458.4224527,
+    "seen": 1795205897.3064098,
+    "ast_hash": "51d85182e9b2492014ec32748d3627cf",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/mapexport.py": {
+    "mtime": 1795209003.8834963,
+    "seen": 1795209505.9524684,
+    "ast_hash": "5a13db0da977ac430bc9f6a1b4f2fcbb",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/mapraw.py": {
+    "mtime": 1795202832.9648848,
+    "seen": 1795205897.3064127,
+    "ast_hash": "47639ee85ae9b234503d3fe578a7637b",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/navigation.py": {
+    "mtime": 1795202918.220181,
+    "seen": 1795205897.3064144,
+    "ast_hash": "833ccf65fab3be4650a819cd7534eb60",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/netinfo.py": {
+    "mtime": 1795273085.35938,
+    "seen": 1795273126.6308484,
+    "ast_hash": "e4435c0be7d463746c94fc4bf606fb84",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/phones_api.py": {
+    "mtime": 1795269929.8720737,
+    "seen": 1795270192.9645946,
+    "ast_hash": "00f79e9cf8c4701e2e933489ff90701c",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/signals.py": {
+    "mtime": 1795268623.5543375,
+    "seen": 1795269311.4126754,
+    "ast_hash": "9c215dbe84c5078834e1729a81eed75b",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/map_import.py": {
+    "mtime": 1795206396.705991,
+    "seen": 1795206628.0111666,
+    "ast_hash": "2985a6d7b7c5696f7974dca1d27933ed",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/signal_rules.py": {
+    "mtime": 1795204899.4948232,
+    "seen": 1795205897.3069725,
+    "ast_hash": "7ef70008fac656d6222bce2e5547df04",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/fear-command.js": {
+    "mtime": 1795269935.370378,
+    "seen": 1795270192.9680212,
+    "ast_hash": "36c9b4da90a25a2371e83fbc9bf5857b",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/front-end/map-import.js": {
+    "mtime": 1795266438.2321298,
+    "seen": 1795267651.5574312,
+    "ast_hash": "415b772b621782bc0b5dbca7fa2a7e75",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/driver/driver_profile.dart": {
+    "mtime": 1795209449.5694263,
+    "seen": 1795209505.947921,
+    "ast_hash": "10802978e4953f8f35a4684182a098a6",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/profile_api.py": {
+    "mtime": 1795266313.2702405,
+    "seen": 1795267651.556127,
+    "ast_hash": "0e28874b4ff68d5fb09ef39c4c3b0676",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/voice.dart": {
+    "mtime": 1795212748.146847,
+    "seen": 1795212988.6206143,
+    "ast_hash": "4ce1c818cb97971b090df406edc1a289",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/ai_dispatch.py": {
+    "mtime": 1795266701.4822657,
+    "seen": 1795267651.555197,
+    "ast_hash": "a025cc8e40ca29a66ffa8ed1d03f00ab",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/sarvam.py": {
+    "mtime": 1795266690.0366983,
+    "seen": 1795267651.556261,
+    "ast_hash": "bd2fa6fc964bfb092bb3e017723853ce",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/triage.py": {
+    "mtime": 1795266856.6812325,
+    "seen": 1795267651.5565486,
+    "ast_hash": "c05f095e21fb7774d8b6b9dcb20bad9a",
+    "semantic_hash": ""
+  },
+  "apps/fear_gov/lib/command/phone_qr.dart": {
+    "mtime": 1795269929.882081,
+    "seen": 1795270192.9569523,
+    "ast_hash": "f2d3ddcf2e69a1240aceba28bdbffbd7",
+    "semantic_hash": ""
+  },
+  "apps/fear_public/lib/responder.dart": {
+    "mtime": 1795266961.0284517,
+    "seen": 1795267651.5545409,
+    "ast_hash": "6662094c3650b3fd1e1b255850270c3f",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/responder.py": {
+    "mtime": 1795267566.84658,
+    "seen": 1795267651.5561955,
+    "ast_hash": "b337320a8157505bf321b31bd2b40c67",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/staff.py": {
+    "mtime": 1795266265.4107752,
+    "seen": 1795267651.5565472,
+    "ast_hash": "7d03aa1222e441835ca713e6c2efaf59",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/fear_backend/public_link.json": {
+    "mtime": 1795273117.4747317,
+    "seen": 1795273126.6319213,
+    "ast_hash": "3bf0bdf38dbd501b32b1b200912deae2",
+    "semantic_hash": ""
+  },
+  "traffic light revamped/backend/setup_permanent_link.py": {
+    "mtime": 1795272860.2744079,
+    "seen": 1795272947.031408,
+    "ast_hash": "a8d5200477e4403ba8b80be92116fac1",
+    "semantic_hash": ""
+  }
+}

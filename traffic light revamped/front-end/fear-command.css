@@ -1,0 +1,76 @@
+/* FEAR Command panel in the simulation viewer's sidebar (fear-command.js). */
+
+#fearSection { border-left: 4px solid #e63946; }
+#fearSection .fear-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+#fearSection .fear-title .fear-badge { background: #e63946; color: #fff; font-weight: 800; border-radius: 4px; padding: 1px 6px; font-size: 11px; letter-spacing: .5px; }
+#fearSection .fear-user { font-size: 11px; opacity: .8; margin: 2px 0 8px; }
+#fearSection input.fear-input, #fearSection select.fear-input, #fearSection textarea.fear-input {
+  width: 100%; margin: 3px 0; padding: 6px 8px; border-radius: 6px; border: 2px solid #3a3a55;
+  background: #24243b; color: #f5f0e8; font-family: var(--font); font-size: 12px;
+}
+#fearSection textarea.fear-input { resize: vertical; min-height: 44px; }
+#fearSection .fear-hint { font-size: 11px; opacity: .72; margin: 4px 0; line-height: 1.35; }
+#fearSection .fear-err { color: #ff8fa3; font-size: 12px; margin: 4px 0; }
+#fearSection .fear-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+#fearSection .fear-row > * { flex: 1 1 auto; }
+
+.fear-mode { display: grid; grid-template-columns: 1fr 1fr; border: 2px solid #f5f0e8; border-radius: 8px; overflow: hidden; margin: 6px 0 4px; }
+.fear-mode button { margin: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; padding: 8px 4px !important;
+  background: transparent !important; color: #f5f0e8 !important; font-weight: 700; }
+.fear-mode button.on.sim { background: #4361ee !important; }
+.fear-mode button.on.real { background: #06a77d !important; }
+.fear-mode-note { font-size: 11px; opacity: .8; margin-bottom: 6px; }
+
+.fear-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin: 8px 0 6px; }
+.fear-tabs button { margin: 0 !important; padding: 5px 2px !important; font-size: 11px !important; }
+.fear-tabs button.active { background: #e63946 !important; color: #fff !important; }
+
+.fear-card { background: #24243b; border: 1px solid #3a3a55; border-radius: 8px; padding: 8px; margin: 6px 0; cursor: pointer; }
+.fear-card:hover { border-color: #e63946; }
+.fear-card.sel { border-color: #ffd166; box-shadow: 0 0 0 1px #ffd166; }
+.fear-card .h { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-weight: 700; }
+.fear-card .s { font-size: 11px; opacity: .8; margin-top: 2px; }
+.fear-pill { font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 10px; white-space: nowrap; text-transform: uppercase; letter-spacing: .3px; }
+.fear-pill.reported { background: #ffd166; color: #1a1a2e; }
+.fear-pill.open { background: #ef476f; color: #fff; }
+.fear-pill.dispatched, .fear-pill.assigned { background: #9b5de5; color: #fff; }
+.fear-pill.on_scene, .fear-pill.en_route, .fear-pill.transporting { background: #f77f00; color: #fff; }
+.fear-pill.available { background: #06a77d; color: #fff; }
+.fear-pill.off_duty, .fear-pill.closed, .fear-pill.completed, .fear-pill.recalled, .fear-pill.declined, .fear-pill.cancelled, .fear-pill.rejected { background: #6c6478; color: #fff; }
+.fear-pill.demo { background: #ef6c00; color: #fff; }
+.fear-pill.prio { background: #1b5e20; color: #69f0ae; }
+
+.fear-detail { background: #24243b; border: 2px solid #e63946; border-radius: 8px; padding: 8px; margin: 6px 0; }
+.fear-detail h4 { margin: 0 0 4px; font-size: 14px; }
+.fear-detail .tl { font-size: 11px; opacity: .85; border-left: 2px solid #3a3a55; padding-left: 6px; margin: 3px 0; }
+.fear-detail button, .fear-card button { font-size: 11px !important; padding: 4px 8px !important; margin: 3px 3px 0 0 !important; }
+.fear-sugg { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 11px; padding: 4px 0; border-top: 1px dashed #3a3a55; }
+
+#fearQrModal { position: fixed; inset: 0; background: rgba(10, 10, 25, .65); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+#fearQrModal .box { background: #fff; color: #1a1a2e; border: 3px solid #1a1a2e; box-shadow: 6px 6px 0 #1a1a2e; border-radius: 10px;
+  padding: 18px 20px; max-width: 420px; width: 92vw; max-height: 94vh; overflow-y: auto; text-align: center; font-family: var(--font); }
+#fearQrModal .box h3 { margin: 0 0 6px; }
+#fearQrModal .qr svg { width: min(260px, 72vw); height: auto; display: block; margin: 6px auto; }
+#fearQrModal .creds { text-align: left; background: #f5f0e8; border-radius: 6px; padding: 6px 10px; margin: 8px 0; font-size: 12px; }
+#fearQrModal .creds code { font-weight: 700; }
+#fearQrModal .servers { font-size: 11px; color: #6c6478; word-break: break-all; }
+#fearQrModal button { margin-top: 10px; padding: 8px 18px; border: 2px solid #1a1a2e; border-radius: 6px; background: #4361ee; color: #fff; font-weight: 700; cursor: pointer; }
+
+/* severity, key terms, AI dispatch agent */
+.fear-sev { font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 10px; text-transform: uppercase; letter-spacing: .3px; }
+.fear-sev.s1 { background: #2a9d8f; color: #fff; }
+.fear-sev.s2 { background: #e9c46a; color: #1a1a2e; }
+.fear-sev.s3 { background: #f4a261; color: #1a1a2e; }
+.fear-sev.s4 { background: #e76f51; color: #fff; }
+.fear-sev.s5 { background: #9d0208; color: #fff; }
+.fear-term { display: inline-block; font-size: 10px; padding: 0 5px; margin: 1px 0; border-radius: 4px; background: rgba(245,240,232,.14); border: 1px solid rgba(245,240,232,.25); }
+.fear-ai { color: #8fd3ff; }
+.fear-ai.warn { color: #ffd166; }
+.fear-aibar { font-size: 11px; padding: 6px 8px; margin: 4px 0 6px; border-radius: 8px; background: rgba(11,46,131,.35); border: 1px solid rgba(143,211,255,.35); }
+.fear-triage, .fear-aibox { font-size: 11px; margin: 6px 0; padding: 6px 8px; border-radius: 8px; background: rgba(245,240,232,.07); }
+.fear-aibox { border-left: 3px solid #8fd3ff; }
+.fear-aibar .fear-mode { grid-template-columns: repeat(3, 1fr); }
+
+#fearSection .fear-mode:has([data-pmode]) { grid-template-columns: repeat(3, 1fr); }
+
+#fearSection button.fear-collapse { width: 100%; text-align: left; margin-top: 8px; font-weight: 700; }
